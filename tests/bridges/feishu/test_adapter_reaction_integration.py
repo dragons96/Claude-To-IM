@@ -343,14 +343,3 @@ class TestFeishuBridgeReactionIntegration:
 
         # 5. 状态被清理（在finally块中执行）
         assert "chat_test_123" not in adapter._pending_reactions
-
-        # 3. 发送卡片时传入了parent_id
-        adapter.send_message.assert_called()
-        call_kwargs = adapter.send_message.call_args[1]
-        assert call_kwargs.get("parent_id") == "user_msg_456"
-
-        # 4. 表情被替换为Done
-        adapter.reaction_manager.replace_with_done.assert_called_once_with("user_msg_456", "reaction_abc")
-
-        # 5. 状态被清理
-        assert "chat_test_123" not in adapter._pending_reactions
