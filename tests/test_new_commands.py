@@ -85,7 +85,7 @@ async def test_handle_delete_missing_session_id(command_handler, sample_message)
 
 @pytest.mark.asyncio
 async def test_session_exec_success(command_handler, sample_message, mock_bridge):
-    """测试 /session-exec 命令 - 成功在指定会话执行"""
+    """测试 /session:exec 命令 - 成功在指定会话执行"""
     # 模拟存储服务
     mock_im_session = Mock()
     mock_im_session.id = "im_session_123"
@@ -119,7 +119,7 @@ async def test_session_exec_success(command_handler, sample_message, mock_bridge
 
 @pytest.mark.asyncio
 async def test_session_exec_missing_params(command_handler, sample_message):
-    """测试 /session-exec 命令 - 参数不足"""
+    """测试 /session:exec 命令 - 参数不足"""
     result = await command_handler._handle_session_exec(
         sample_message,
         "db-session-123"
@@ -132,7 +132,7 @@ async def test_session_exec_missing_params(command_handler, sample_message):
 
 @pytest.mark.asyncio
 async def test_session_exec_session_not_found(command_handler, sample_message, mock_bridge):
-    """测试 /session-exec 命令 - 会话不存在"""
+    """测试 /session:exec 命令 - 会话不存在"""
     # 模拟存储服务返回 None
     mock_bridge.session_manager.storage.get_im_session_by_platform_id = AsyncMock(
         return_value=None

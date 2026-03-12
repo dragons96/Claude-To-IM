@@ -23,7 +23,7 @@
 /sessions            - 列出所有会话
 /switch <会话ID>      - 切换到指定会话
 /delete <会话ID>      - 删除指定会话
-/session-exec <会话ID> <内容> - 在指定会话中执行命令
+/session:exec <会话ID> <内容> - 在指定会话中执行命令
 
 ...
 ```

@@ -77,7 +77,7 @@ class CommandHandler:
             return await self._handle_switch(message, args)
         elif command == "/delete":
             return await self._handle_delete(message, args)
-        elif command == "/session-exec":
+        elif command == "/session:exec":
             return await self._handle_session_exec(message, args)
         elif command == "/help":
             return await self._handle_help(message, args)
@@ -279,7 +279,7 @@ class CommandHandler:
             return f"❌ 删除会话失败: {str(e)}"
 
     async def _handle_session_exec(self, message: IMMessage, args: str):
-        """处理 /session-exec 命令 - 在指定会话中执行内容
+        """处理 /session:exec 命令 - 在指定会话中执行内容
 
         Args:
             message: 消息对象
@@ -294,10 +294,10 @@ class CommandHandler:
             if len(parts) < 2:
                 return """❌ 参数不足
 
-用法: /session-exec <会话ID> <内容>
+用法: /session:exec <会话ID> <内容>
 
 示例:
-/session-exec abc123-def456 帮我分析这段代码
+/session:exec abc123-def456-7890 帮我分析这段代码
 
 💡 提示:
 • 会话ID可以通过 /sessions 查看
@@ -408,15 +408,15 @@ class CommandHandler:
   示例:
   /delete abc123-def456-7890
 
-/session-exec <会话ID> <内容>
+/session:exec <会话ID> <内容>
   在指定会话中执行命令
   • 不切换活跃会话的情况下向指定会话发送消息
   • 适合同时管理多个会话
   • 会话ID通过 /sessions 查看
 
   示例:
-  /session-exec abc123-def456-7890 帮我分析这段代码
-  /session-exec xyz789-0123-4567 运行测试
+  /session:exec abc123-def456-7890 帮我分析这段代码
+  /session:exec xyz789-0123-4567 运行测试
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -466,7 +466,7 @@ class CommandHandler:
 • 支持引用/回复消息
 • 支持文件和图片
 • Claude CLI 命令需要在活跃会话中执行
-• 使用 /session-exec 可以在不切换会话的情况下管理多个会话
+• 使用 /session:exec 可以在不切换会话的情况下管理多个会话
 • 使用 /help:mcp 和 /help:command 查看详细的工具和命令信息
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""

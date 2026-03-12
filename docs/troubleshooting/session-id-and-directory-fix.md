@@ -72,7 +72,7 @@ await self.storage.set_claude_session_active(target_session.id, True)
 
 ### 4. 更新命令参数
 
-所有命令 (`/switch`, `/delete`, `/session-exec`) 现在都接受并使用 SDK `session_id`。
+所有命令 (`/switch`, `/delete`, `/session:exec`) 现在都接受并使用 SDK `session_id`。
 
 ## 修改文件
 
@@ -126,7 +126,7 @@ python -m pytest tests/ -v -k "session" --ignore=tests/integration
    - `/sessions`: 现在显示 SDK session_id
    - `/switch <session_id>`: 使用显示的 SDK session_id
    - `/delete <session_id>`: 使用显示的 SDK session_id
-   - `/session-exec <session_id> <content>`: 使用 SDK session_id
+   - `/session:exec <session_id> <content>`: 使用 SDK session_id
 
 ### 数据库兼容性
 

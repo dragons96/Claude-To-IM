@@ -2,7 +2,7 @@
 
 ## 问题描述
 
-用户反馈创建会话时显示的会话ID与 `/sessions` 列表中显示的会话ID不一致，导致在使用 `/switch`、`/delete`、`/session-exec` 等命令时产生困惑。
+用户反馈创建会话时显示的会话ID与 `/sessions` 列表中显示的会话ID不一致，导致在使用 `/switch`、`/delete`、`/session:exec` 等命令时产生困惑。
 
 ### 具体表现
 
@@ -73,7 +73,7 @@ session_id = session.get("id", "unknown")
 **命令处理器**:
 - `/switch`: 现在使用数据库ID查询
 - `/delete`: 现在使用数据库ID查询
-- `/session-exec`: 现在使用数据库ID查询
+- `/session:exec`: 现在使用数据库ID查询
 
 #### 3. 内部映射
 
