@@ -104,6 +104,10 @@ class FeishuBridge(IMAdapter):
         # 表情管理器（初始化时为None，start方法中创建http_client后再初始化）
         self.reaction_manager = None
 
+        # 状态管理 - 存储每个会话的表情信息
+        # 结构: {session_id: {"user_message_id": str, "reaction_id": str}}
+        self._pending_reactions: Dict[str, Dict[str, str]] = {}
+
     async def start(self) -> None:
         """启动适配器
 

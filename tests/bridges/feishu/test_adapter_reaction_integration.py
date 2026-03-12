@@ -54,3 +54,51 @@ class TestFeishuBridgeReactionIntegration:
             assert hasattr(adapter, 'reaction_manager')
             assert isinstance(adapter.reaction_manager, FeishuReactionManager)
             assert adapter.reaction_manager._bot_user_id == "bot_123"
+
+    def test_adapter_has_pending_reactions_state(self):
+        """测试Adapter有pending_reactions状态管理"""
+        # 创建mock依赖
+        mock_claude_adapter = Mock()
+        mock_session_manager = Mock()
+        mock_resource_manager = Mock()
+        mock_message_handler = Mock()
+        mock_message_handler.bot_user_id = None
+        mock_command_handler = Mock()
+        mock_card_builder = Mock()
+
+        config = {
+            "app_id": "test_app",
+            "app_secret": "test_secret",
+            "encrypt_key": "test_key",
+            "verification_token": "test_token",
+            "bot_user_id": "bot_123"
+        }
+
+        # 创建adapter
+        adapter = FeishuBridge(
+            config=config,
+            claude_adapter=mock_claude_adapter,
+            session_manager=mock_session_manager,
+            resource_manager=mock_resource_manager,
+            message_handler=mock_message_handler,
+            command_handler=mock_command_handler,
+            card_builder=mock_card_builder
+        )
+
+        # Mock WebSocket客户端创建并启动
+        with patch('lark_oapi.ws.Client'):
+            import asyncio
+            asyncio.run(adapter.start())
+
+        # 验证状态字典存在
+        assert hasattr(adapter, '_pending_reactions')
+        assert isinstance(adapter._pending_reactions, dict)
+
+        # 验证可以存储和读取状态
+        adapter._pending_reactions["session_123"] = {
+            "user_message_id": "msg_456",
+            "reaction_id": "reaction_789"
+        }
+
+        assert adapter._pending_reactions["session_123"]["user_message_id"] == "msg_456"
+        assert adapter._pending_reactions["session_123"]["reaction_id"] == "reaction_789"
