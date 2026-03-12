@@ -1295,7 +1295,8 @@ class FeishuBridge(IMAdapter):
                 return
 
             logger.info(f"Claude 会话获取成功 - session_id: {claude_session.session_id}")
-            logger.debug(f"工作目录: {claude_session.work_directory}")
+            logger.info(f"📁 实际工作目录: {claude_session.work_directory}")
+            logger.info(f"🔍 验证会话是否在内存中: {claude_session.session_id in self.claude_adapter.sessions}")
 
             # 处理附件
             if message.attachments:
@@ -1375,8 +1376,12 @@ class FeishuBridge(IMAdapter):
                 )
                 return
 
-            logger.info(f"找到会话记录 - session_id: {session_record.session_id}")
-            logger.debug(f"工作目录: {session_record.work_directory}")
+            logger.info(f"✅ 找到会话记录:")
+            logger.info(f"  数据库 id: {session_record.id}")
+            logger.info(f"  SDK session_id: {session_record.session_id}")
+            logger.info(f"  work_directory: {session_record.work_directory}")
+            logger.info(f"  is_active: {session_record.is_active}")
+            logger.info(f"  summary: {session_record.summary}")
 
             # 检查会话是否在主会话列表中（活跃会话）
             if session_record.session_id in self.claude_adapter.sessions:
@@ -1405,7 +1410,11 @@ class FeishuBridge(IMAdapter):
                 session_options = copy.copy(self.claude_adapter.options)
                 session_options.cwd = session_record.work_directory
 
-                logger.info(f"临时会话 options.cwd: {session_options.cwd}")
+                logger.info(f"🔧 临时会话创建参数:")
+                logger.info(f"  数据库 session_id: {session_record.session_id}")
+                logger.info(f"  work_directory: {session_record.work_directory}")
+                logger.info(f"  session_options.cwd: {session_options.cwd}")
+                logger.info(f"  是否设置 resume: False (临时会话不使用 resume)")
 
                 temp_client = ClaudeSDKClient(session_options)
 

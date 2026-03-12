@@ -1,9 +1,12 @@
 # src/services/session_manager.py
 import uuid
+import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from src.core.claude_adapter import ClaudeSession as ClaudeAdapterSession
 from src.core.exceptions import SessionNotFoundError, PermissionDeniedError
+
+logger = logging.getLogger(__name__)
 
 
 class SessionManager:
@@ -157,11 +160,20 @@ class SessionManager:
                     try:
                         # 使用数据库中的 session_id 和 work_directory 重新创建会话
                         # 注意：传递 session_id 参数用于恢复会话上下文
+                        logger.info(f"🔍 准备恢复会话:")
+                        logger.info(f"  数据库 session_id: {db_session.session_id}")
+                        logger.info(f"  工作目录: {db_session.work_directory}")
+                        logger.info(f"  将设置的 resume_session_id: {db_session.session_id}")
+
                         restored_session = await self.claude_adapter.create_session(
                             work_directory=db_session.work_directory,
                             session_id=db_session.session_id,  # 使用相同的 session_id
                             resume_session_id=db_session.session_id  # 使用 resume 参数恢复会话
                         )
+
+                        logger.info(f"✅ 会话恢复成功")
+                        logger.info(f"  返回的 session_id: {restored_session.session_id}")
+                        logger.info(f"  返回的 work_directory: {restored_session.work_directory}")
 
                         if restored_session:
                             logger.info(f"✅ 会话恢复成功: {restored_session.session_id}")

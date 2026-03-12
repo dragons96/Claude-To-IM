@@ -3,6 +3,7 @@ from typing import Optional, List, Dict, Any, AsyncIterator
 import uuid
 import asyncio
 import copy
+import logging
 from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
 from claude_agent_sdk import (
     SystemMessage,
@@ -14,6 +15,8 @@ from claude_agent_sdk import (
 )
 from src.core.claude_adapter import ClaudeAdapter, ClaudeSession
 from src.core.message import StreamEvent, StreamEventType
+
+logger = logging.getLogger(__name__)
 
 
 class ClaudeSDKAdapter(ClaudeAdapter):
@@ -51,9 +54,18 @@ class ClaudeSDKAdapter(ClaudeAdapter):
         session_options = copy.copy(self.options)
         session_options.cwd = work_directory
 
+        logger.info(f"🔧 SDK create_session 参数:")
+        logger.info(f"  work_directory: {work_directory}")
+        logger.info(f"  session_id: {session_id}")
+        logger.info(f"  resume_session_id: {resume_session_id}")
+        logger.info(f"  session_options.cwd: {session_options.cwd}")
+
         # 如果指定了要恢复的会话，设置 resume 选项
         if resume_session_id is not None:
             session_options.resume = resume_session_id
+            logger.info(f"  ✅ 已设置 session_options.resume: {session_options.resume}")
+        else:
+            logger.info(f"  ❌ 未设置 resume 参数")
 
         # 创建 SDK 客户端并建立连接
         client = ClaudeSDKClient(session_options)
