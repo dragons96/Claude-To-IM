@@ -242,3 +242,115 @@ class TestFeishuBridgeReactionIntegration:
 
         # 验证状态仍然被清理
         assert "session_123" not in adapter._pending_reactions
+
+    @pytest.mark.asyncio
+    async def test_full_message_flow_with_reactions(self):
+        """测试完整的消息处理流程（包含表情）"""
+        # 创建mock依赖
+        mock_claude_adapter = Mock()
+        mock_session_manager = Mock()
+        mock_resource_manager = Mock()
+        mock_message_handler = Mock()
+        mock_message_handler.bot_user_id = None
+        mock_command_handler = Mock()
+        mock_card_builder = Mock()
+
+        config = {
+            "app_id": "test_app",
+            "app_secret": "test_secret",
+            "encrypt_key": "test_key",
+            "verification_token": "test_token",
+            "bot_user_id": "bot_123"
+        }
+
+        # 创建adapter
+        adapter = FeishuBridge(
+            config=config,
+            claude_adapter=mock_claude_adapter,
+            session_manager=mock_session_manager,
+            resource_manager=mock_resource_manager,
+            message_handler=mock_message_handler,
+            command_handler=mock_command_handler,
+            card_builder=mock_card_builder
+        )
+
+        # Mock WebSocket客户端创建并启动
+        with patch('lark_oapi.ws.Client'):
+            await adapter.start()
+
+        # 准备测试消息
+        from src.core.message import IMMessage, MessageType
+        test_message = IMMessage(
+            session_id="chat_test_123",
+            message_id="user_msg_456",
+            content="Hello",
+            message_type=MessageType.TEXT,
+            user_id="user_789",
+            user_name="Test User",
+            is_private_chat=False
+        )
+
+        # Mock reaction_manager
+        adapter.reaction_manager.add_typing = AsyncMock(return_value="reaction_abc")
+        adapter.reaction_manager.replace_with_done = AsyncMock(return_value=True)
+
+        # Mock send_message（用于发送卡片）
+        adapter.send_message = AsyncMock(return_value="card_msg_id")
+
+        # Mock claude_adapter和session_manager
+        mock_claude_session = Mock()
+        mock_claude_session.session_id = "claude_session_xyz"
+
+        adapter.session_manager.get_or_create_session = AsyncMock(return_value=mock_claude_session)
+
+        # Mock流式响应
+        async def mock_send_message(*args, **kwargs):
+            from src.core.message import StreamEvent, StreamEventType
+            yield StreamEvent(
+                event_type=StreamEventType.TEXT_DELTA,
+                content="Hi",
+                metadata={}
+            )
+            yield StreamEvent(
+                event_type=StreamEventType.END,
+                content="",
+                metadata={}
+            )
+
+        adapter.claude_adapter.send_message = mock_send_message
+        adapter.card_builder.create_message_card = Mock(return_value="{}")
+        adapter.card_builder.create_text_card = Mock(return_value="{}")
+        adapter.update_message = AsyncMock(return_value=True)
+
+        # 执行
+        await adapter.route_to_claude(test_message)
+
+        # 验证完整流程
+        # 1. 添加了Typing表情
+        adapter.reaction_manager.add_typing.assert_called_once_with("user_msg_456")
+
+        # 2. 状态被保存（注意：状态在finally块中被清理，所以无法在这里验证）
+        # 改为验证方法被调用过
+        assert adapter.reaction_manager.add_typing.called
+
+        # 3. 发送卡片时传入了parent_id
+        adapter.send_message.assert_called()
+        call_kwargs = adapter.send_message.call_args[1]
+        assert call_kwargs.get("parent_id") == "user_msg_456"
+
+        # 4. 表情被替换为Done
+        adapter.reaction_manager.replace_with_done.assert_called_once_with("user_msg_456", "reaction_abc")
+
+        # 5. 状态被清理（在finally块中执行）
+        assert "chat_test_123" not in adapter._pending_reactions
+
+        # 3. 发送卡片时传入了parent_id
+        adapter.send_message.assert_called()
+        call_kwargs = adapter.send_message.call_args[1]
+        assert call_kwargs.get("parent_id") == "user_msg_456"
+
+        # 4. 表情被替换为Done
+        adapter.reaction_manager.replace_with_done.assert_called_once_with("user_msg_456", "reaction_abc")
+
+        # 5. 状态被清理
+        assert "chat_test_123" not in adapter._pending_reactions
