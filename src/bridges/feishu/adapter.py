@@ -19,6 +19,7 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTr
 from src.core.im_adapter import IMAdapter
 from src.core.message import IMMessage, MessageType, StreamEvent, StreamEventType
 from src.core.exceptions import SessionNotFoundError
+from .reaction_manager import FeishuReactionManager
 
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,9 @@ class FeishuBridge(IMAdapter):
         # 格式: {session_id: {"question_id": ..., "question": ..., "options": ..., "multi_select": bool, "message_id": ...}
         self._pending_questions: Dict[str, Dict[str, Any]] = {}
 
+        # 表情管理器（初始化时为None，start方法中创建http_client后再初始化）
+        self.reaction_manager = None
+
     async def start(self) -> None:
         """启动适配器
 
@@ -111,6 +115,12 @@ class FeishuBridge(IMAdapter):
                 .app_id(self.config["app_id"]) \
                 .app_secret(self.config["app_secret"]) \
                 .build()
+
+            # 初始化表情管理器
+            self.reaction_manager = FeishuReactionManager(
+                http_client=self._http_client,
+                bot_user_id=self.config.get("bot_user_id")
+            )
 
             # 获取机器人用户ID（优先级：配置 > 文件 > 未设置）
             bot_user_id = self.config.get("bot_user_id")
@@ -860,7 +870,7 @@ class FeishuBridge(IMAdapter):
                             # 更新原卡片
                             update_success = await self.update_message(
                                 message_id=card_message_id,
-                                content=result_card
+                                new_content=result_card
                             )
 
                             if not update_success:
@@ -957,7 +967,7 @@ class FeishuBridge(IMAdapter):
                             # 更新原卡片
                             update_success = await self.update_message(
                                 message_id=card_message_id,
-                                content=custom_answer_card
+                                new_content=custom_answer_card
                             )
 
                             if not update_success:
@@ -1018,6 +1028,15 @@ class FeishuBridge(IMAdapter):
 
             # 处理命令结果
             if command_result is not None:
+                # 检查是否是特殊返回值（需要在指定会话中执行）
+                if isinstance(command_result, dict) and command_result.get("type") == "exec_in_session":
+                    # 在指定会话中执行消息
+                    claude_session_id = command_result.get("claude_session_id")
+                    exec_message = command_result.get("message")
+                    logger.info(f"在指定会话中执行: claude_session_id={claude_session_id}, content={exec_message.content[:50]}...")
+                    await self.route_to_claude_with_session(exec_message, claude_session_id)
+                    return
+
                 # 检查是否是特殊返回值（需要转发到 Claude）
                 if isinstance(command_result, dict) and command_result.get("type") == "forward_to_claude":
                     # 提取转换后的消息，转发到 Claude
@@ -1122,6 +1141,84 @@ class FeishuBridge(IMAdapter):
             )
         except Exception as e:
             logger.error(f"路由消息到 Claude 失败: {e}", exc_info=True)
+            # 发送友好的错误消息
+            try:
+                await self.send_message(
+                    session_id=message.session_id,
+                    content=f"❌ 处理消息时出错\n\n{str(e)}",
+                    message_type=MessageType.TEXT,
+                    receive_id_type="chat_id",
+                )
+            except Exception:
+                pass  # 忽略错误消息发送失败
+
+    async def route_to_claude_with_session(self, message: IMMessage, claude_session_id: str) -> None:
+        """路由消息到指定的Claude会话
+
+        不获取或创建会话，直接使用指定的会话ID发送消息
+
+        Args:
+            message: IM消息对象
+            claude_session_id: Claude SDK session_id
+        """
+        try:
+            logger.info(f"开始路由到指定的 Claude 会话: {claude_session_id}")
+            logger.debug(f"平台: {self.platform}, 平台会话ID: {message.session_id}")
+
+            # 获取指定会话的信息
+            from src.services.models import ClaudeSession
+            db_session = self.session_manager.storage.db
+            session_record = db_session.query(ClaudeSession).filter_by(
+                session_id=claude_session_id
+            ).first()
+
+            if not session_record:
+                error_msg = f"找不到指定的会话: {claude_session_id}"
+                logger.error(error_msg)
+                await self.send_message(
+                    session_id=message.session_id,
+                    content=f"❌ {error_msg}\n\n请使用 /sessions 查看可用会话",
+                    message_type=MessageType.TEXT,
+                    receive_id_type="chat_id",
+                )
+                return
+
+            logger.info(f"找到会话记录 - session_id: {session_record.session_id}")
+            logger.debug(f"工作目录: {session_record.work_directory}")
+
+            # 构建会话对象
+            from src.core.claude_adapter import ClaudeSession
+            claude_session = ClaudeSession(
+                session_id=session_record.session_id,
+                work_directory=session_record.work_directory
+            )
+
+            # 处理附件
+            if message.attachments:
+                logger.info(f"处理附件: {len(message.attachments)} 个")
+                await self._process_attachments(
+                    message.attachments,
+                    claude_session.work_directory
+                )
+
+            # 构建完整消息内容 (包含引用)
+            full_content = message.content
+            if message.quoted_message:
+                logger.info("检测到引用消息，进行格式化...")
+                quoted = self.format_quoted_message(message.quoted_message)
+                full_content = quoted + full_content
+
+            logger.info(f"准备发送到 Claude，消息内容长度: {len(full_content)} 字符")
+
+            # 发送到Claude并流式处理响应
+            await self._stream_claude_response(
+                session_id=message.session_id,
+                claude_session_id=claude_session.session_id,
+                message_content=full_content,
+            )
+
+        except Exception as e:
+            logger.error(f"路由消息到指定 Claude 会话失败: {e}", exc_info=True)
             # 发送友好的错误消息
             try:
                 await self.send_message(
@@ -1355,7 +1452,7 @@ class FeishuBridge(IMAdapter):
 
             # 检查响应
             if response.code == 0 and response.data:
-                bot_user_id = response.data.bot.user_id
+                bot_user_id = response.data.bot.open_id
                 logger.info(f"成功获取机器人信息: bot_user_id={bot_user_id}")
                 return bot_user_id
             else:
