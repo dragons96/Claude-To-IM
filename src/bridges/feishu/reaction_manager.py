@@ -130,3 +130,45 @@ class FeishuReactionManager:
                 message_id=message_id
             )
             return False
+
+    async def add_typing(self, message_id: str) -> Optional[str]:
+        """
+        为消息添加"敲键盘"表情反应
+
+        Args:
+            message_id: 消息ID
+
+        Returns:
+            reaction_id: 表情反应ID，失败返回None
+        """
+        return await self.add_reaction(message_id, self.EMOJI_TYPING)
+
+    async def replace_with_done(self, message_id: str, reaction_id: str) -> bool:
+        """
+        将"敲键盘"表情替换为"完成"表情
+
+        Args:
+            message_id: 消息ID
+            reaction_id: 要删除的"敲键盘"表情ID
+
+        Returns:
+            bool: 成功返回True，失败返回False
+        """
+        try:
+            # 先删除Typing表情
+            delete_success = await self.delete_reaction(message_id, reaction_id)
+            if not delete_success:
+                # 删除失败，直接返回False
+                return False
+
+            # 添加Done表情
+            add_result = await self.add_reaction(message_id, self.EMOJI_DONE)
+            return add_result is not None
+        except Exception as e:
+            logger.error(
+                f"替换表情失败: {e}",
+                exc_info=True,
+                message_id=message_id,
+                reaction_id=reaction_id
+            )
+            return False

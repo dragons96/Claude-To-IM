@@ -82,3 +82,41 @@ class TestFeishuReactionManager:
         success = await manager.delete_reaction("msg_456", "reaction_123")
 
         assert success is False
+
+    @pytest.mark.asyncio
+    async def test_add_typing(self):
+        """测试添加敲键盘表情"""
+        mock_http_client = AsyncMock()
+        mock_response = Mock()
+        mock_response.code = 0
+        mock_response.data = Mock()
+        mock_response.data.reaction_id = "typing_reaction_123"
+        mock_http_client.im.v1.message_reaction.create.return_value = mock_response
+
+        manager = FeishuReactionManager(mock_http_client, "bot_123")
+        reaction_id = await manager.add_typing("msg_456")
+
+        assert reaction_id == "typing_reaction_123"
+
+    @pytest.mark.asyncio
+    async def test_replace_with_done_success(self):
+        """测试成功替换表情为完成"""
+        mock_http_client = AsyncMock()
+        mock_http_client.im.v1.message_reaction.delete.return_value = Mock(code=0)
+        mock_http_client.im.v1.message_reaction.create.return_value = Mock(code=0)
+
+        manager = FeishuReactionManager(mock_http_client, "bot_123")
+        success = await manager.replace_with_done("msg_456", "reaction_123")
+
+        assert success is True
+
+    @pytest.mark.asyncio
+    async def test_replace_with_done_delete_fails(self):
+        """测试删除失败时整体返回False"""
+        mock_http_client = AsyncMock()
+        mock_http_client.im.v1.message_reaction.delete.return_value = Mock(code=231003)
+
+        manager = FeishuReactionManager(mock_http_client, "bot_123")
+        success = await manager.replace_with_done("msg_456", "reaction_123")
+
+        assert success is False
