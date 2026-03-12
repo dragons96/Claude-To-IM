@@ -1132,6 +1132,7 @@ class FeishuBridge(IMAdapter):
                 session_id=message.session_id,
                 claude_session_id=claude_session.session_id,
                 message_content=full_content,
+                user_message_id=message.message_id,  # 新增参数
             )
 
         except RuntimeError as e:
@@ -1219,6 +1220,7 @@ class FeishuBridge(IMAdapter):
                 session_id=message.session_id,
                 claude_session_id=claude_session.session_id,
                 message_content=full_content,
+                user_message_id=message.message_id,  # 新增参数
             )
 
         except Exception as e:
@@ -1284,6 +1286,7 @@ class FeishuBridge(IMAdapter):
         session_id: str,
         claude_session_id: str,
         message_content: str,
+        user_message_id: str,  # 新增参数
     ) -> None:
         """流式处理Claude响应
 
@@ -1293,10 +1296,35 @@ class FeishuBridge(IMAdapter):
             session_id: 平台会话ID
             claude_session_id: Claude会话ID
             message_content: 消息内容
+            user_message_id: 用户消息ID，用于添加表情和引用
         """
         try:
             logger.info("开始流式处理 Claude 响应...")
             logger.debug(f"Claude 会话 ID: {claude_session_id}")
+
+            # ===== 新增：表情处理开始 =====
+            # 步骤1: 添加"敲键盘"表情
+            reaction_id = await self.reaction_manager.add_typing(user_message_id)
+
+            # 步骤2: 存储状态
+            if reaction_id:
+                self._pending_reactions[session_id] = {
+                    "user_message_id": user_message_id,
+                    "reaction_id": reaction_id
+                }
+                logger.info(
+                    f"已添加敲键盘表情",
+                    session_id=session_id,
+                    user_message_id=user_message_id,
+                    reaction_id=reaction_id
+                )
+            else:
+                logger.warning(
+                    f"添加敲键盘表情失败，继续处理消息",
+                    session_id=session_id,
+                    user_message_id=user_message_id
+                )
+            # ===== 表情处理结束 =====
 
             # 创建初始卡片（飞书只能更新卡片消息，不能更新文本消息）
             initial_card = self.card_builder.create_message_card("思考中...")
@@ -1306,6 +1334,7 @@ class FeishuBridge(IMAdapter):
                 content=initial_card,
                 message_type=MessageType.CARD,  # 必须使用 CARD 类型才能更新
                 receive_id_type="chat_id",
+                parent_id=user_message_id,  # 新增：引用用户消息
             )
             logger.info(f"初始卡片已发送，消息 ID: {message_id}")
 
@@ -1433,6 +1462,10 @@ class FeishuBridge(IMAdapter):
         except Exception as e:
             logger.error(f"Failed to stream Claude response: {e}")
             raise
+        finally:
+            # ===== 新增：确保完成表情处理 =====
+            await self._finalize_reaction(session_id)
+            # ===== 结束 =====
 
     async def _fetch_bot_user_id(self) -> Optional[str]:
         """获取机器人用户ID
