@@ -59,6 +59,10 @@ class Settings(BaseSettings):
         default="",
         description="允许的工具列表（逗号分隔，空=允许所有）"
     )
+    DISALLOWED_TOOLS: str = Field(
+        default="",
+        description="禁止的工具列表（逗号分隔，优先级高于 ALLOWED_TOOLS）"
+    )
 
     # 资源配置
     RESOURCE_CACHE_DAYS: int = Field(default=7, description="资源缓存天数")
@@ -104,6 +108,24 @@ class Settings(BaseSettings):
         if not self.ALLOWED_TOOLS:
             return []  # 空列表 = 允许所有工具
         return [t.strip() for t in self.ALLOWED_TOOLS.split(",") if t.strip()]
+
+    @property
+    def disallowed_tools_list(self) -> List[str]:
+        """获取禁止的工具列表
+
+        空列表表示不禁止任何工具（默认行为）
+
+        支持的权限语法（与 allowed_tools 相同）：
+        - 精确匹配：Bash, Read, Write
+        - MCP 通配符：mcp (所有 mcp__ 开头的工具)
+        - MCP 服务器：mcp:pencil (mcp__pencil__*), mcp:godot (mcp__godot__*)
+        - MCP 嵌套：mcp:plugin:playwright (mcp__plugin_playwright_playwright__*)
+
+        注意：disallowed_tools 的优先级高于 allowed_tools
+        """
+        if not self.DISALLOWED_TOOLS:
+            return []  # 空列表 = 不禁止任何工具
+        return [t.strip() for t in self.DISALLOWED_TOOLS.split(",") if t.strip()]
 
     def _match_tool_pattern(self, pattern: str, tool_name: str) -> bool:
         """检查工具名称是否匹配权限模式

@@ -263,7 +263,10 @@ async def create_components(settings) -> Dict[str, Any]:
         max_turns=settings.MAX_TURNS,
         include_partial_messages=True,
         # 加载所有配置源：用户目录、项目目录、本地目录
-        setting_sources=["user", "project", "local"]
+        setting_sources=["user", "project", "local"],
+        # 工具权限配置
+        allowed_tools=settings.allowed_tools_list,
+        disallowed_tools=settings.disallowed_tools_list,
     )
     claude_adapter = ClaudeSDKAdapter(claude_options)
     logger.info(f"Claude SDK 适配器初始化完成 (模型: {settings.ANTHROPIC_MODEL})")
