@@ -13,6 +13,7 @@ import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
     CreateMessageRequest,
     PatchMessageRequest,
+    ReplyMessageRequest,
 )
 from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTrigger
 
@@ -20,6 +21,7 @@ from src.core.im_adapter import IMAdapter
 from src.core.message import IMMessage, MessageType, StreamEvent, StreamEventType
 from src.core.exceptions import SessionNotFoundError
 from .reaction_manager import FeishuReactionManager
+from .bot_info import get_bot_info
 
 
 logger = logging.getLogger(__name__)
@@ -126,21 +128,48 @@ class FeishuBridge(IMAdapter):
                 bot_user_id=self.config.get("bot_user_id")
             )
 
-            # 获取机器人用户ID（优先级：配置 > 文件 > 未设置）
+            # 获取机器人用户ID（优先级：配置 > API > 文件 > 未设置）
             bot_user_id = self.config.get("bot_user_id")
+            source = None
 
-            # 如果配置中没有，尝试从文件加载
+            # 如果配置中没有，尝试通过 API 获取
+            if not bot_user_id:
+                logger.info("🔍 正在通过飞书 API 获取机器人信息...")
+                bot_info = get_bot_info(self._http_client)
+                if bot_info and bot_info.get("open_id"):
+                    bot_user_id = bot_info["open_id"]
+                    source = "API"
+                    logger.info(f"✅ 通过 API 获取到机器人信息:")
+                    logger.info(f"   - Open ID: {bot_user_id}")
+                    if bot_info.get("app_name"):
+                        logger.info(f"   - 应用名称: {bot_info['app_name']}")
+                    if bot_info.get("activate_status"):
+                        status_map = {
+                            0: "初始化",
+                            1: "租户停用",
+                            2: "租户启用",
+                            3: "安装后待启用",
+                            4: "升级待启用",
+                            5: "license过期停用",
+                            6: "Lark套餐到期或降级停用"
+                        }
+                        logger.info(f"   - 激活状态: {status_map.get(bot_info['activate_status'], bot_info['activate_status'])}")
+
+                    # 保存到文件，下次启动时可以直接使用
+                    self._save_bot_user_id_to_file(bot_user_id)
+
+            # 如果 API 获取失败，尝试从文件加载
             if not bot_user_id:
                 bot_user_id = self._load_bot_user_id_from_file()
                 if bot_user_id:
-                    # 设置机器人用户ID到消息处理器
-                    self.message_handler.set_bot_user_id(bot_user_id)
+                    source = "文件"
 
             if bot_user_id:
                 # 设置机器人用户ID到消息处理器（如果还没有设置）
                 if not self.message_handler.bot_user_id:
                     self.message_handler.set_bot_user_id(bot_user_id)
-                source = "配置" if self.config.get("bot_user_id") else "文件"
+                if not source:
+                    source = "配置" if self.config.get("bot_user_id") else "文件"
                 logger.info(f"✅ 使用{source}中的机器人用户ID: {bot_user_id}")
             else:
                 logger.info("💡 未配置 bot_user_id")
@@ -263,6 +292,12 @@ class FeishuBridge(IMAdapter):
             receive_id_type = kwargs.get("receive_id_type", "chat_id")
             parent_id = kwargs.get("parent_id")
 
+            # 调试日志
+            if parent_id:
+                logger.info(f"🔍 send_message: parent_id = {parent_id}, 类型 = {type(parent_id)}")
+            else:
+                logger.warning("⚠️ send_message: parent_id 未提供")
+
             # 构建消息体
             msg_type, msg_content = self._build_message_content(
                 content, message_type
@@ -280,6 +315,12 @@ class FeishuBridge(IMAdapter):
             # 添加parent_id (回复消息)
             if parent_id:
                 request_body.parent_id = parent_id
+                logger.info(f"✅ 已设置 request_body.parent_id = {parent_id}")
+                # 验证设置是否成功
+                if hasattr(request_body, 'parent_id'):
+                    logger.info(f"✅ 验证: request_body.parent_id = {request_body.parent_id}")
+                else:
+                    logger.error("❌ 验证失败: request_body 没有 parent_id 属性！")
 
             # 创建请求
             request = CreateMessageRequest.builder() \
@@ -288,6 +329,7 @@ class FeishuBridge(IMAdapter):
                 .build()
 
             # 发送消息
+            logger.info(f"发送请求到飞书 API: msg_type={msg_type}, parent_id={parent_id}")
             response = self._http_client.im.v1.message.create(request)
 
             if response.code != 0:
@@ -299,6 +341,72 @@ class FeishuBridge(IMAdapter):
 
         except Exception as e:
             logger.error(f"Failed to send message: {e}")
+            raise
+
+    async def reply_message(
+        self,
+        parent_message_id: str,
+        content: str,
+        message_type: MessageType = MessageType.TEXT,
+        reply_in_thread: bool = False,
+    ) -> str:
+        """回复消息到飞书（使用专门的回复API）
+
+        使用飞书的 ReplyMessage API，回复关系会自动建立。
+
+        Args:
+            parent_message_id: 要回复的消息ID
+            content: 消息内容
+            message_type: 消息类型
+            reply_in_thread: 是否在话题中回复
+
+        Returns:
+            str: 新消息的ID
+
+        Raises:
+            Exception: 发送失败时抛出
+        """
+        if not self._http_client:
+            raise RuntimeError("HTTP client not initialized. Call start first.")
+
+        try:
+            logger.info(f"准备回复消息: parent_message_id={parent_message_id}")
+
+            # 构建消息体
+            msg_type, msg_content = self._build_message_content(
+                content, message_type
+            )
+
+            # 构建请求体
+            from lark_oapi.api.im.v1.model.reply_message_request_body import ReplyMessageRequestBody
+
+            request_body = ReplyMessageRequestBody.builder() \
+                .msg_type(msg_type) \
+                .content(msg_content) \
+                .reply_in_thread(reply_in_thread) \
+                .build()
+
+            # 创建请求
+            request = ReplyMessageRequest.builder() \
+                .message_id(parent_message_id) \
+                .request_body(request_body) \
+                .build()
+
+            logger.info(f"发送回复请求: msg_type={msg_type}, reply_in_thread={reply_in_thread}")
+
+            # 发送回复
+            response = self._http_client.im.v1.message.reply(request)
+
+            if response.code != 0:
+                raise Exception(
+                    f"Failed to reply message: {response.code} - {response.msg}"
+                )
+
+            logger.info(f"✅ 回复成功，新消息ID: {response.data.message_id}")
+            return response.data.message_id
+
+        except Exception as e:
+            logger.error(f"Failed to reply message: {e}")
             raise
 
     async def update_message(
@@ -1359,14 +1467,26 @@ class FeishuBridge(IMAdapter):
             # 创建初始卡片（飞书只能更新卡片消息，不能更新文本消息）
             initial_card = self.card_builder.create_message_card("思考中...")
             logger.info(f"发送初始卡片: 思考中...")
-            message_id = await self.send_message(
-                session_id=session_id,
-                content=initial_card,
-                message_type=MessageType.CARD,  # 必须使用 CARD 类型才能更新
-                receive_id_type="chat_id",
-                parent_id=user_message_id,  # 新增：引用用户消息
-            )
-            logger.info(f"初始卡片已发送，消息 ID: {message_id}")
+            logger.info(f"🔍 调试: user_message_id = {user_message_id}, 类型 = {type(user_message_id)}")
+            logger.info(f"🔍 调试: session_id = {session_id}")
+            if not user_message_id:
+                logger.error("❌ user_message_id 为空，无法回复用户消息！")
+                # 如果没有 user_message_id，回退到普通发送
+                message_id = await self.send_message(
+                    session_id=session_id,
+                    content=initial_card,
+                    message_type=MessageType.CARD,
+                    receive_id_type="chat_id",
+                )
+            else:
+                # 使用专门的回复API
+                message_id = await self.reply_message(
+                    parent_message_id=user_message_id,
+                    content=initial_card,
+                    message_type=MessageType.CARD,
+                    reply_in_thread=False,  # 不在话题中回复
+                )
+            logger.info(f"✅ 初始卡片已发送，消息 ID: {message_id}")
 
             # 流式接收响应
             accumulated_content = ""
@@ -1407,12 +1527,21 @@ class FeishuBridge(IMAdapter):
                     )
 
                     # 发送卡片并获取消息ID
-                    card_message_id = await self.send_message(
-                        session_id=session_id,
-                        content=choice_card,
-                        message_type=MessageType.CARD,
-                        receive_id_type="chat_id",
-                    )
+                    if user_message_id:
+                        # 使用回复API
+                        card_message_id = await self.reply_message(
+                            parent_message_id=user_message_id,
+                            content=choice_card,
+                            message_type=MessageType.CARD,
+                        )
+                    else:
+                        # 回退到普通发送
+                        card_message_id = await self.send_message(
+                            session_id=session_id,
+                            content=choice_card,
+                            message_type=MessageType.CARD,
+                            receive_id_type="chat_id",
+                        )
 
                     logger.info(f"用户决策卡片已发送，消息ID: {card_message_id}")
 
@@ -1439,12 +1568,19 @@ class FeishuBridge(IMAdapter):
                     if self.settings and not self.settings.is_tool_allowed(event.tool_name):
                         logger.warning(f"工具 {event.tool_name} 未被允许使用，已跳过")
                         # 发送权限提示消息
-                        await self.send_message(
-                            session_id=session_id,
-                            content=f"⚠️ 工具 `{event.tool_name}` 未被授权使用，请联系管理员",
-                            message_type=MessageType.TEXT,
-                            receive_id_type="chat_id",
-                        )
+                        if user_message_id:
+                            await self.reply_message(
+                                parent_message_id=user_message_id,
+                                content=f"⚠️ 工具 `{event.tool_name}` 未被授权使用，请联系管理员",
+                                message_type=MessageType.TEXT,
+                            )
+                        else:
+                            await self.send_message(
+                                session_id=session_id,
+                                content=f"⚠️ 工具 `{event.tool_name}` 未被授权使用，请联系管理员",
+                                message_type=MessageType.TEXT,
+                                receive_id_type="chat_id",
+                            )
                         # 继续处理，不中断流程
                         continue
 
@@ -1455,12 +1591,19 @@ class FeishuBridge(IMAdapter):
                             event.tool_input
                         )
                         # 发送工具调用卡片
-                        await self.send_message(
-                            session_id=session_id,
-                            content=tool_card,
-                            message_type=MessageType.CARD,
-                            receive_id_type="chat_id",
-                        )
+                        if user_message_id:
+                            await self.reply_message(
+                                parent_message_id=user_message_id,
+                                content=tool_card,
+                                message_type=MessageType.CARD,
+                            )
+                        else:
+                            await self.send_message(
+                                session_id=session_id,
+                                content=tool_card,
+                                message_type=MessageType.CARD,
+                                receive_id_type="chat_id",
+                            )
                     else:
                         logger.debug(f"配置禁用工具消息发送，不在飞书显示工具调用卡片: {event.tool_name}")
 
