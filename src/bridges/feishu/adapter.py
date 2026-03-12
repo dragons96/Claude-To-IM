@@ -1466,3 +1466,39 @@ class FeishuBridge(IMAdapter):
         except Exception as e:
             logger.error(f"获取机器人用户ID时发生错误: {e}", exc_info=True)
             return None
+
+    async def _finalize_reaction(self, session_id: str) -> None:
+        """完成会话时的表情处理：移除Typing，添加Done
+
+        Args:
+            session_id: 会话ID
+        """
+        reaction_info = self._pending_reactions.get(session_id)
+
+        if not reaction_info:
+            logger.warning(f"未找到会话 {session_id} 的表情信息")
+            return
+
+        try:
+            user_message_id = reaction_info["user_message_id"]
+            reaction_id = reaction_info["reaction_id"]
+
+            # 替换表情：Typing -> Done
+            success = await self.reaction_manager.replace_with_done(
+                user_message_id,
+                reaction_id
+            )
+
+            if success:
+                logger.info(f"会话 {session_id} 表情替换成功")
+            else:
+                logger.warning(f"会话 {session_id} 表情替换失败")
+
+        except Exception as e:
+            logger.error(
+                f"完成表情处理失败: {e}, session_id={session_id}",
+                exc_info=True
+            )
+        finally:
+            # 清理状态
+            self._pending_reactions.pop(session_id, None)
