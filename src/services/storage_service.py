@@ -182,6 +182,23 @@ class StorageService:
             is_active=True
         ).all()
 
+    async def get_all_claude_sessions(
+        self,
+        im_session_id: str
+    ) -> List[ClaudeSession]:
+        """
+        获取指定 IM 会话的所有 Claude 会话（包括非活跃的）
+
+        Args:
+            im_session_id: IM 会话 ID
+
+        Returns:
+            ClaudeSession 对象列表，按创建时间倒序排列
+        """
+        return self.db.query(ClaudeSession).filter_by(
+            im_session_id=im_session_id
+        ).order_by(ClaudeSession.created_at.desc()).all()
+
     async def set_claude_session_active(
         self,
         session_id: str,
@@ -198,6 +215,42 @@ class StorageService:
         if session:
             session.is_active = is_active
             self.db.commit()
+
+    async def set_all_claude_sessions_inactive(self, im_session_id: str) -> None:
+        """
+        将指定 IM 会话的所有 Claude 会话标记为非活跃
+
+        Args:
+            im_session_id: IM 会话 ID
+        """
+        self.db.query(ClaudeSession).filter_by(
+            im_session_id=im_session_id
+        ).update({"is_active": False})
+        self.db.commit()
+
+    async def update_claude_session_id(
+        self,
+        old_session_id: str,
+        new_session_id: str
+    ) -> bool:
+        """
+        更新 Claude 会话的 session_id（用于发送第一条消息后更新为真实 ID）
+
+        Args:
+            old_session_id: 旧的 session_id
+            new_session_id: 新的 session_id（从 SDK ResultMessage 中获取）
+
+        Returns:
+            是否更新成功
+        """
+        session = self.db.query(ClaudeSession).filter_by(
+            session_id=old_session_id
+        ).first()
+        if session:
+            session.session_id = new_session_id
+            self.db.commit()
+            return True
+        return False
 
     async def delete_claude_session(self, session_id: str) -> bool:
         """
@@ -248,6 +301,20 @@ class StorageService:
         self.db.commit()
         self.db.refresh(message)
         return message
+
+    async def get_message_history(self, claude_session_id: str) -> List[MessageHistory]:
+        """
+        获取指定会话的消息历史
+
+        Args:
+            claude_session_id: Claude 会话 ID (数据库中的 id 字段)
+
+        Returns:
+            MessageHistory 对象列表，按创建时间排序
+        """
+        return self.db.query(MessageHistory).filter_by(
+            claude_session_id=claude_session_id
+        ).order_by(MessageHistory.created_at).all()
 
     # ==================== Permission Operations ====================
 

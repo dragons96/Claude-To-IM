@@ -15,6 +15,7 @@ def mock_bridge():
     # 模拟 session_manager
     bridge.session_manager = Mock()
     bridge.session_manager.delete_session = AsyncMock()
+    bridge.session_manager.delete_session_by_db_id = AsyncMock()
     bridge.session_manager.storage = Mock()
 
     # 模拟 platform
@@ -48,27 +49,27 @@ def sample_message():
 @pytest.mark.asyncio
 async def test_handle_delete_success(command_handler, sample_message, mock_bridge):
     """测试 /delete 命令 - 成功删除会话"""
-    # 设置模拟返回值
-    mock_bridge.session_manager.delete_session.return_value = {
+    # 设置模拟返回值（使用新的 delete_session_by_db_id 方法）
+    mock_bridge.session_manager.delete_session_by_db_id = AsyncMock(return_value={
         "id": "session123",
         "session_id": "sdk-session-123",
         "work_directory": "/path/to/session",
         "summary": "Test session",
-    }
+    })
 
     # 执行命令
     result = await command_handler._handle_delete(sample_message, "session123")
 
-    # 验证返回值
+    # 验证返回值（现在显示的是数据库 id）
     assert "✅ 成功删除会话" in result
-    assert "session123" in result
-    assert "sdk-session-123" in result
+    assert "session123" in result  # 显示数据库 id
+    assert "/path/to/session" in result
 
     # 验证调用了正确的方法
-    mock_bridge.session_manager.delete_session.assert_called_once_with(
+    mock_bridge.session_manager.delete_session_by_db_id.assert_called_once_with(
         platform="feishu",
         platform_session_id="chat456",
-        claude_session_id="session123"
+        db_session_id="session123"
     )
 
 
@@ -90,20 +91,22 @@ async def test_session_exec_success(command_handler, sample_message, mock_bridge
     mock_im_session.id = "im_session_123"
 
     mock_claude_session = Mock()
+    mock_claude_session.id = "db-session-123"  # 数据库id
     mock_claude_session.im_session_id = "im_session_123"
-    mock_claude_session.session_id = "sdk-session-abc"
+    mock_claude_session.session_id = "sdk-session-abc"  # SDK session_id
 
     mock_bridge.session_manager.storage.get_im_session_by_platform_id = AsyncMock(
         return_value=mock_im_session
     )
+    # 修改为使用 get_claude_session（数据库id查询）而不是 get_claude_session_by_sdk_id
     mock_bridge.session_manager.storage.get_claude_session = AsyncMock(
         return_value=mock_claude_session
     )
 
-    # 执行命令
+    # 执行命令（使用数据库id）
     result = await command_handler._handle_session_exec(
         sample_message,
-        "db-session-123 帮我分析这段代码"
+        "db-session-123 帮我分析这段代码"  # 使用数据库id
     )
 
     # 验证返回值类型

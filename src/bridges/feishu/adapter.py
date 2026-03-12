@@ -6,6 +6,7 @@
 import logging
 import json
 import threading
+import uuid
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -1187,6 +1188,53 @@ class FeishuBridge(IMAdapter):
                     await self.route_to_claude(command_result["message"])
                     return
 
+                # 检查是否是新会话创建（需要发送介绍消息）
+                if isinstance(command_result, dict) and command_result.get("type") == "new_session_created":
+                    # 先发送创建成功消息
+                    success_message = command_result.get("message")
+                    logger.info(f"新会话创建成功: {success_message[:100]}...")
+                    await self.send_message(
+                        session_id=message.session_id,
+                        content=success_message,
+                        message_type=MessageType.TEXT,
+                        receive_id_type="chat_id",
+                    )
+
+                    # 然后发送自我介绍请求
+                    # 注意：不构造假的 IMMessage，而是直接调用内部方法
+                    intro_message = command_result.get("intro_message")
+                    logger.info(f"请求 AI 自我介绍: {intro_message[:50]}...")
+
+                    # 获取 IM session
+                    im_session = await self.session_manager.storage.get_im_session_by_platform_id(
+                        self.platform,
+                        message.session_id
+                    )
+
+                    if not im_session:
+                        logger.error(f"找不到 IM session: platform={self.platform}, platform_session_id={message.session_id}")
+                        return
+
+                    # 获取当前活跃会话
+                    from src.services.models import ClaudeSession
+                    db_session = self.session_manager.storage.db
+                    claude_session_record = db_session.query(ClaudeSession).filter_by(
+                        im_session_id=im_session.id,
+                        is_active=True
+                    ).first()
+
+                    if claude_session_record:
+                        # 直接调用流式处理，不使用 user_message_id（不回复消息）
+                        await self._stream_claude_response(
+                            session_id=message.session_id,
+                            claude_session_id=claude_session_record.session_id,
+                            message_content=intro_message,
+                            user_message_id=None,  # 不回复任何消息
+                        )
+                    else:
+                        logger.error("找不到活跃的 Claude 会话，无法发送自我介绍消息")
+                    return
+
                 # 如果是普通字符串，发送结果
                 if command_result:
                     logger.info(f"命令处理结果: {command_result[:100]}...")
@@ -1442,26 +1490,31 @@ class FeishuBridge(IMAdapter):
             logger.debug(f"Claude 会话 ID: {claude_session_id}")
 
             # ===== 新增：表情处理开始 =====
-            # 步骤1: 添加"敲键盘"表情
-            logger.info(f"准备添加敲键盘表情 - session_id: {session_id}, user_message_id: {user_message_id}")
-            reaction_id = await self.reaction_manager.add_typing(user_message_id)
+            # 只有在有 user_message_id 时才添加表情
+            reaction_id = None
+            if user_message_id:
+                # 步骤1: 添加"敲键盘"表情
+                logger.info(f"准备添加敲键盘表情 - session_id: {session_id}, user_message_id: {user_message_id}")
+                reaction_id = await self.reaction_manager.add_typing(user_message_id)
 
-            # 步骤2: 存储状态
-            if reaction_id:
-                self._pending_reactions[session_id] = {
-                    "user_message_id": user_message_id,
-                    "reaction_id": reaction_id
-                }
-                logger.info(
-                    f"已添加敲键盘表情 - session_id: {session_id}, "
-                    f"user_message_id: {user_message_id}, reaction_id: {reaction_id}, "
-                    f"pending_reactions_count: {len(self._pending_reactions)}"
-                )
+                # 步骤2: 存储状态
+                if reaction_id:
+                    self._pending_reactions[session_id] = {
+                        "user_message_id": user_message_id,
+                        "reaction_id": reaction_id
+                    }
+                    logger.info(
+                        f"已添加敲键盘表情 - session_id: {session_id}, "
+                        f"user_message_id: {user_message_id}, reaction_id: {reaction_id}, "
+                        f"pending_reactions_count: {len(self._pending_reactions)}"
+                    )
+                else:
+                    logger.warning(
+                        f"添加敲键盘表情失败，继续处理消息 - session_id: {session_id}, "
+                        f"user_message_id: {user_message_id}"
+                    )
             else:
-                logger.warning(
-                    f"添加敲键盘表情失败，继续处理消息 - session_id: {session_id}, "
-                    f"user_message_id: {user_message_id}"
-                )
+                logger.info("user_message_id 为空，跳过表情处理")
             # ===== 表情处理结束 =====
 
             # 创建初始卡片（飞书只能更新卡片消息，不能更新文本消息）
@@ -1470,8 +1523,8 @@ class FeishuBridge(IMAdapter):
             logger.info(f"🔍 调试: user_message_id = {user_message_id}, 类型 = {type(user_message_id)}")
             logger.info(f"🔍 调试: session_id = {session_id}")
             if not user_message_id:
-                logger.error("❌ user_message_id 为空，无法回复用户消息！")
-                # 如果没有 user_message_id，回退到普通发送
+                logger.info("user_message_id 为空，使用普通发送而非回复")
+                # 如果没有 user_message_id，直接发送消息
                 message_id = await self.send_message(
                     session_id=session_id,
                     content=initial_card,
@@ -1619,6 +1672,20 @@ class FeishuBridge(IMAdapter):
                     # 结束
                     logger.info(f"流式响应结束，共处理 {event_count} 个事件")
                     logger.info(f"最终响应长度: {len(accumulated_content)} 字符")
+
+                    # 检查是否有真实的 session_id（从 ResultMessage 中获取）
+                    real_session_id = event.metadata.get("real_session_id")
+                    if real_session_id and real_session_id != claude_session_id:
+                        logger.info(f"检测到真实的 session_id: {real_session_id}，更新数据库...")
+                        # 更新数据库中的 session_id
+                        update_success = await self.session_manager.storage.update_claude_session_id(
+                            old_session_id=claude_session_id,
+                            new_session_id=real_session_id
+                        )
+                        if update_success:
+                            logger.info(f"✅ session_id 已更新: {claude_session_id} -> {real_session_id}")
+                        else:
+                            logger.warning(f"⚠️ session_id 更新失败: {claude_session_id}")
 
                     # 如果有内容但从未通过 TEXT_DELTA 更新过，现在更新
                     # 这种情况通常发生在响应很短或没有流式输出的情况下

@@ -362,10 +362,8 @@ async def create_components(settings) -> Dict[str, Any]:
 
     logger.info("所有组件初始化完成")
 
-    # 恢复活跃会话（程序重启后根据数据库记录重新创建 SDK 客户端）
-    logger.info("=" * 60)
-    await session_manager.resume_active_sessions()
-    logger.info("=" * 60)
+    # 注意：不再在启动时恢复所有会话，改为按需恢复
+    # 当收到飞书消息时，会自动检查并恢复该消息对应的活跃会话
 
     return components
 

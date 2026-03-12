@@ -31,13 +31,15 @@ class ClaudeSDKAdapter(ClaudeAdapter):
     async def create_session(
         self,
         work_directory: str,
-        session_id: Optional[str] = None
+        session_id: Optional[str] = None,
+        resume_session_id: Optional[str] = None
     ) -> ClaudeSession:
         """创建新的 Claude 会话
 
         Args:
             work_directory: 工作目录路径
             session_id: 可选的自定义会话 ID
+            resume_session_id: 可选的要恢复的会话 ID
 
         Returns:
             ClaudeSession: 创建的会话对象
@@ -48,6 +50,10 @@ class ClaudeSDKAdapter(ClaudeAdapter):
         # 为这个会话创建独立的 options，设置工作目录
         session_options = copy.copy(self.options)
         session_options.cwd = work_directory
+
+        # 如果指定了要恢复的会话，设置 resume 选项
+        if resume_session_id is not None:
+            session_options.resume = resume_session_id
 
         # 创建 SDK 客户端并建立连接
         client = ClaudeSDKClient(session_options)
@@ -314,10 +320,16 @@ class ClaudeSDKAdapter(ClaudeAdapter):
                 else:
                     # 正常结束
                     result_received = True
+                    # 提取真实的 session_id
+                    real_session_id = sdk_message.session_id
+                    logger.info(f"会话结束，真实的 session_id: {real_session_id}")
                     yield StreamEvent(
                         event_type=StreamEventType.END,
                         content="",
-                        metadata={"session_id": session_id}
+                        metadata={
+                            "session_id": session_id,
+                            "real_session_id": real_session_id  # ← 真实的 session_id
+                        }
                     )
                 break
 

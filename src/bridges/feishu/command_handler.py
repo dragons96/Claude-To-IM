@@ -107,41 +107,41 @@ class CommandHandler:
             # 解析工作目录
             work_directory = args.strip() if args.strip() else None
 
-            # 如果没有指定路径,使用默认路径（飞书会话ID）
-            if not work_directory:
-                # 使用 session_manager 的默认会话根目录
-                from pathlib import Path
-                default_root = getattr(self.session_manager, 'default_session_root', '/tmp/claude_sessions')
-                # 确保 default_root 是字符串或可转换为字符串
-                if not isinstance(default_root, (str, Path)):
-                    default_root = '/tmp/claude_sessions'
-                elif isinstance(default_root, Path):
-                    default_root = str(default_root)
-
-                # 使用飞书会话ID作为目录名
-                work_directory = str(Path(default_root) / message.session_id)
-
             # 调用 session_manager 创建会话
+            # 如果没有指定路径，session_manager 会自动使用 Claude 会话ID作为目录名
             claude_session = await self.session_manager.create_session(
                 platform=self.platform,
                 platform_session_id=message.session_id,
                 work_directory=work_directory,
-                summary=f"通过 /new 创建于 {message.session_id}"
+                summary=f"通过 /new 创建"
             )
 
-            session_id = getattr(claude_session, 'session_id', 'unknown')
+            # 获取数据库记录，使用数据库 id 作为用户可见的会话ID
+            im_session = await self.session_manager.storage.get_im_session_by_platform_id(
+                self.platform, message.session_id
+            )
+            db_session = await self.session_manager.storage.get_claude_session_by_sdk_id(
+                claude_session.session_id
+            )
+
+            display_session_id = db_session.id if db_session else claude_session.session_id
             work_dir = getattr(claude_session, 'work_directory', work_directory)
 
-            return f"""✅ 成功创建新会话
+            # 返回成功消息，并请求 AI 自我介绍
+            return {
+                "type": "new_session_created",
+                "message": f"""✅ 成功创建新会话
 
 📋 会话信息:
-• 会话ID: {session_id}
+• 会话ID: {display_session_id}
 • 工作目录: {work_dir}
 
 💡 提示:
 • 现在可以发送消息给 Claude 了
 • 使用 /sessions 查看所有会话
-• 使用 /help 查看所有可用命令"""
+• 使用 /help 查看所有可用命令""",
+                "intro_message": "你好！请简单介绍一下你自己，包括你是什么助手，能帮助用户做什么。"
+            }
 
         except PermissionDeniedError as e:
             return f"""❌ 权限不足
@@ -189,6 +189,7 @@ class CommandHandler:
             lines = ["📋 会话列表:"]
             for idx, session in enumerate(sessions, 1):
                 active_marker = "✨ " if session.get("is_active") else "   "
+                # 使用数据库 id 作为用户可见的会话ID
                 session_id = session.get("id", "unknown")
                 summary = session.get("summary", "无摘要")
                 work_dir = session.get("work_directory", "未知目录")
@@ -210,26 +211,27 @@ class CommandHandler:
 
         Args:
             message: 消息对象
-            args: 会话ID
+            args: 会话ID（数据库id）
 
         Returns:
             str: 切换结果
         """
         try:
-            # 解析会话ID
-            session_id = args.strip()
-            if not session_id:
+            # 解析会话ID（数据库id）
+            db_session_id = args.strip()
+            if not db_session_id:
                 return "❌ 请指定要切换的会话ID\n用法: /switch <session_id>"
 
-            # 切换会话
-            session = await self.session_manager.switch_session(
+            # 切换会话（使用数据库id）
+            session = await self.session_manager.switch_session_by_db_id(
                 platform=self.platform,
                 platform_session_id=message.session_id,
-                claude_session_id=session_id
+                db_session_id=db_session_id
             )
 
             work_dir = session.get("work_directory", "未知目录")
-            return f"✅ 成功切换到会话\n会话ID: {session_id}\n工作目录: {work_dir}"
+            display_id = session.get("id", db_session_id)
+            return f"✅ 成功切换到会话\n会话ID: {display_id}\n工作目录: {work_dir}"
 
         except SessionNotFoundError as e:
             return f"❌ {str(e)}\n使用 /sessions 查看可用会话"
@@ -241,29 +243,28 @@ class CommandHandler:
 
         Args:
             message: 消息对象
-            args: 会话ID
+            args: 会话ID（数据库id）
 
         Returns:
             str: 删除结果
         """
         try:
-            # 解析会话ID
-            session_id = args.strip()
-            if not session_id:
+            # 解析会话ID（数据库id）
+            db_session_id = args.strip()
+            if not db_session_id:
                 return "❌ 请指定要删除的会话ID\n用法: /delete <session_id>"
 
-            # 删除会话
-            session_info = await self.session_manager.delete_session(
+            # 删除会话（使用数据库id）
+            session_info = await self.session_manager.delete_session_by_db_id(
                 platform=self.platform,
                 platform_session_id=message.session_id,
-                claude_session_id=session_id
+                db_session_id=db_session_id
             )
 
             return f"""✅ 成功删除会话
 
 📋 已删除会话信息:
 • 会话ID: {session_info['id']}
-• SDK Session ID: {session_info['session_id']}
 • 工作目录: {session_info['work_directory']}
 
 💡 提示:
@@ -305,7 +306,7 @@ class CommandHandler:
             target_session_id = parts[0].strip()
             content_to_exec = parts[1].strip()
 
-            # 验证目标会话是否存在
+            # 验证目标会话是否存在（使用数据库id）
             im_session = await self.session_manager.storage.get_im_session_by_platform_id(
                 self.platform, message.session_id
             )
@@ -333,8 +334,8 @@ class CommandHandler:
             # 返回特殊标记，表示需要在指定会话中执行
             return {
                 "type": "exec_in_session",
-                "claude_session_id": target_session.session_id,  # SDK session_id
-                "db_session_id": target_session_id,  # 数据库id
+                "claude_session_id": target_session.session_id,  # SDK session_id（内部使用）
+                "db_session_id": target_session.id,  # 数据库id（用户可见）
                 "message": exec_message
             }
 
@@ -393,26 +394,29 @@ class CommandHandler:
 /switch <会话ID>
   切换到指定会话
   • 切换后,消息将发送到该会话
+  • 会话ID通过 /sessions 查看
 
   示例:
-  /switch abc123-def456
+  /switch abc123-def456-7890
 
 /delete <会话ID>
   删除指定会话
   • 删除会话及其消息历史
   • 删除后无法恢复
+  • 会话ID通过 /sessions 查看
 
   示例:
-  /delete abc123-def456
+  /delete abc123-def456-7890
 
 /session-exec <会话ID> <内容>
   在指定会话中执行命令
   • 不切换活跃会话的情况下向指定会话发送消息
   • 适合同时管理多个会话
+  • 会话ID通过 /sessions 查看
 
   示例:
-  /session-exec abc123 帮我分析这段代码
-  /session-exec def456 运行测试
+  /session-exec abc123-def456-7890 帮我分析这段代码
+  /session-exec xyz789-0123-4567 运行测试
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

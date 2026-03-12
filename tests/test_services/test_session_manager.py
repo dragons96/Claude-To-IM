@@ -25,7 +25,12 @@ def mock_storage():
     storage.get_active_claude_sessions = AsyncMock()
     storage.create_claude_session = AsyncMock()
     storage.get_claude_session = AsyncMock()
+    storage.get_claude_session_by_sdk_id = AsyncMock()
     storage.set_claude_session_active = AsyncMock()
+    storage.set_all_claude_sessions_inactive = AsyncMock()
+    storage.get_all_claude_sessions = AsyncMock()
+    storage.delete_claude_session = AsyncMock()
+    storage.db = Mock()
     return storage
 
 
@@ -85,7 +90,8 @@ async def test_get_or_create_session_auto_create(session_manager, mock_storage, 
     # 验证
     assert session is not None
     assert session.session_id == "claude_sdk_123"
-    assert session.work_directory == "/tmp/claude_sessions/default"
+    # 目录会被重命名为 session_id（在 Windows 上路径分隔符是 \）
+    assert "claude_sdk_123" in session.work_directory
     assert session.is_active is True
 
     # 验证调用
@@ -181,7 +187,7 @@ async def test_list_sessions(session_manager, mock_storage):
     mock_session_2.summary = "Summary 2"
     mock_session_2.created_at = None
 
-    mock_storage.get_active_claude_sessions.return_value = [mock_session_1, mock_session_2]
+    mock_storage.get_all_claude_sessions.return_value = [mock_session_1, mock_session_2]
 
     # 调用方法
     sessions = await session_manager.list_sessions(
@@ -218,13 +224,13 @@ async def test_switch_session_success(session_manager, mock_storage):
     mock_target_session.summary = "Target"
     mock_target_session.created_at = None
     mock_target_session.im_session_id = "im_switch_test"  # 添加这个属性
-    mock_storage.get_claude_session.return_value = mock_target_session
+    mock_storage.get_claude_session_by_sdk_id.return_value = mock_target_session
 
-    # 调用方法
+    # 调用方法（使用 SDK session_id）
     result = await session_manager.switch_session(
         platform="feishu",
         platform_session_id="feishu_chat_switch",
-        claude_session_id="claude_target"
+        claude_session_id="sdk_target"  # 使用 SDK session_id
     )
 
     # 验证
@@ -233,7 +239,10 @@ async def test_switch_session_success(session_manager, mock_storage):
     assert result["work_directory"] == "/work/target"
     assert result["is_active"] is True
 
-    # 验证设置为活跃状态
+    # 验证：先调用 set_all_claude_sessions_inactive 将所有其他会话标记为非活跃
+    mock_storage.set_all_claude_sessions_inactive.assert_called_once_with("im_switch_test")
+
+    # 验证：再调用 set_claude_session_active 设置目标会话为活跃（使用数据库 id）
     mock_storage.set_claude_session_active.assert_called_once_with("claude_target", True)
 
 
@@ -246,7 +255,7 @@ async def test_switch_session_not_found(session_manager, mock_storage):
     mock_storage.get_im_session_by_platform_id.return_value = mock_im_session
 
     # Mock 目标会话不存在
-    mock_storage.get_claude_session.return_value = None
+    mock_storage.get_claude_session_by_sdk_id.return_value = None
 
     # 调用方法应该抛出异常
     with pytest.raises(SessionNotFoundError):
