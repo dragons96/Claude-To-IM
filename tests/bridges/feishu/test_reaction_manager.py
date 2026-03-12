@@ -54,3 +54,31 @@ class TestFeishuReactionManager:
         reaction_id = await manager.add_reaction("msg_456", "Typing")
 
         assert reaction_id is None
+
+    @pytest.mark.asyncio
+    async def test_delete_reaction_success(self):
+        """测试成功删除表情"""
+        mock_http_client = AsyncMock()
+        mock_response = Mock()
+        mock_response.code = 0
+        mock_http_client.im.v1.message_reaction.delete.return_value = mock_response
+
+        manager = FeishuReactionManager(mock_http_client, "bot_123")
+        success = await manager.delete_reaction("msg_456", "reaction_123")
+
+        assert success is True
+        mock_http_client.im.v1.message_reaction.delete.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_delete_reaction_failure(self):
+        """测试删除失败"""
+        mock_http_client = AsyncMock()
+        mock_response = Mock()
+        mock_response.code = 231003
+        mock_response.msg = "reaction not found"
+        mock_http_client.im.v1.message_reaction.delete.return_value = mock_response
+
+        manager = FeishuReactionManager(mock_http_client, "bot_123")
+        success = await manager.delete_reaction("msg_456", "reaction_123")
+
+        assert success is False

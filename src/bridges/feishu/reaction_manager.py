@@ -8,7 +8,7 @@
 
 from typing import Optional
 import structlog
-from lark_oapi.api.im.v1 import CreateMessageReactionRequest
+from lark_oapi.api.im.v1 import CreateMessageReactionRequest, DeleteMessageReactionRequest
 
 logger = structlog.get_logger(__name__)
 
@@ -87,3 +87,46 @@ class FeishuReactionManager:
                 emoji_type=emoji_type
             )
             return None
+
+    async def delete_reaction(self, message_id: str, reaction_id: str) -> bool:
+        """
+        通用方法：删除表情反应
+
+        Args:
+            message_id: 消息ID
+            reaction_id: 表情反应ID
+
+        Returns:
+            bool: 成功返回True，失败返回False
+        """
+        try:
+            request = DeleteMessageReactionRequest.builder() \
+                .message_id(message_id) \
+                .reaction_id(reaction_id) \
+                .build()
+
+            response = await self._http_client.im.v1.message_reaction.delete(request)
+
+            if response.code == 0:
+                logger.info(
+                    f"成功删除表情 reaction_id: {reaction_id}",
+                    reaction_id=reaction_id,
+                    message_id=message_id
+                )
+                return True
+            else:
+                logger.error(
+                    f"删除表情失败: code={response.code}, msg={response.msg}",
+                    reaction_id=reaction_id,
+                    message_id=message_id
+                )
+                return False
+
+        except Exception as e:
+            logger.error(
+                f"删除表情异常: {e}",
+                exc_info=True,
+                reaction_id=reaction_id,
+                message_id=message_id
+            )
+            return False
