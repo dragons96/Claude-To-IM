@@ -501,8 +501,8 @@ class WeChatBridge(IMAdapter):
 
 ## 联系方式
 
-- 问题反馈: [GitHub Issues](https://github.com/your-username/claude-to-im/issues)
-- 邮箱: your-email@example.com
+- 问题反馈: [GitHub Issues](https://github.com/dragons96/Claude-To-Im/issues)
+- 邮箱: 521274311@qq.com
 
 ---
 
