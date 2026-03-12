@@ -1378,12 +1378,95 @@ class FeishuBridge(IMAdapter):
             logger.info(f"找到会话记录 - session_id: {session_record.session_id}")
             logger.debug(f"工作目录: {session_record.work_directory}")
 
-            # 构建会话对象
-            from src.core.claude_adapter import ClaudeSession
-            claude_session = ClaudeSession(
-                session_id=session_record.session_id,
-                work_directory=session_record.work_directory
-            )
+            # 检查会话是否在主会话列表中（活跃会话）
+            if session_record.session_id in self.claude_adapter.sessions:
+                logger.info(f"会话 {session_record.session_id} 在主会话列表中，使用标准流程")
+                # 直接使用现有的 _stream_claude_response 方法
+                await self._stream_claude_response(
+                    session_id=message.session_id,
+                    claude_session_id=session_record.session_id,
+                    message_content=message.content,
+                    user_message_id=message.message_id,
+                )
+                return
+
+            # 非活跃会话，临时创建并使用
+            logger.warning(f"会话 {session_record.session_id} 不在内存中，临时创建并使用...")
+            logger.info(f"目标工作目录: {session_record.work_directory}")
+            logger.info(f"原始消息内容: '{message.content}'")
+            temp_client = None
+
+            try:
+                # 临时创建会话 - 使用与 SDK adapter 相同的方式
+                from claude_agent_sdk import ClaudeSDKClient
+                import copy
+
+                # 创建独立的 options，设置工作目录
+                session_options = copy.copy(self.claude_adapter.options)
+                session_options.cwd = session_record.work_directory
+
+                logger.info(f"临时会话 options.cwd: {session_options.cwd}")
+
+                temp_client = ClaudeSDKClient(session_options)
+
+                # 手动建立连接
+                if hasattr(temp_client, '__aenter__'):
+                    await temp_client.__aenter__()
+
+                logger.info(f"✅ 临时会话已创建: {session_record.session_id}")
+                logger.info(f"准备发送消息: '{message.content}'")
+
+                # 处理附件
+                if message.attachments:
+                    from src.core.claude_adapter import ClaudeSession
+                    temp_session = ClaudeSession(
+                        session_id=session_record.session_id,
+                        work_directory=session_record.work_directory,
+                        is_active=False
+                    )
+                    logger.info(f"处理附件: {len(message.attachments)} 个")
+                    await self._process_attachments(
+                        message.attachments,
+                        temp_session.work_directory
+                    )
+
+                # 构建完整消息内容 (包含引用)
+                full_content = message.content
+                if message.quoted_message:
+                    logger.info("检测到引用消息，进行格式化...")
+                    quoted = self.format_quoted_message(message.quoted_message)
+                    full_content = quoted + full_content
+
+                # 使用完整的流式响应流程（包含表情、卡片、流式更新）
+                await self._stream_claude_response_with_client(
+                    session_id=message.session_id,
+                    client=temp_client,
+                    claude_session_id=session_record.session_id,
+                    message_content=full_content,
+                    user_message_id=message.message_id,
+                )
+
+                logger.info(f"✅ 临时会话响应已发送: {session_record.session_id}")
+
+            except Exception as e:
+                error_msg = f"临时会话执行失败: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                await self.send_message(
+                    session_id=message.session_id,
+                    content=f"❌ {error_msg}",
+                    message_type=MessageType.TEXT,
+                    receive_id_type="chat_id",
+                )
+
+            finally:
+                # 清理临时会话
+                if temp_client and hasattr(temp_client, '__aexit__'):
+                    logger.info(f"清理临时会话: {session_record.session_id}")
+                    try:
+                        await temp_client.__aexit__(None, None, None)
+                        logger.info(f"✅ 临时会话已清理: {session_record.session_id}")
+                    except Exception as e:
+                        logger.error(f"清理临时会话失败: {e}")
 
             # 处理附件
             if message.attachments:
@@ -1422,6 +1505,112 @@ class FeishuBridge(IMAdapter):
                 )
             except Exception:
                 pass  # 忽略错误消息发送失败
+
+    async def _stream_claude_response_with_client(
+        self,
+        session_id: str,
+        client,
+        claude_session_id: str,
+        message_content: str,
+        user_message_id: str,
+    ) -> None:
+        """使用指定的 client 流式处理Claude响应
+
+        支持临时会话，但提供完整的流式响应体验（表情、卡片、流式更新）
+
+        Args:
+            session_id: 平台会话ID
+            client: SDK client（可以是临时的）
+            claude_session_id: Claude会话ID
+            message_content: 消息内容
+            user_message_id: 用户消息ID
+        """
+        try:
+            logger.info("开始流式处理 Claude 响应（临时会话）...")
+            logger.debug(f"Claude 会话 ID: {claude_session_id}")
+            logger.debug(f"消息内容: {message_content[:100]}...")
+
+            # ===== 新增：表情处理开始 =====
+            reaction_id = None
+            if user_message_id:
+                logger.info(f"准备添加敲键盘表情 - session_id: {session_id}, user_message_id: {user_message_id}")
+                reaction_id = await self.reaction_manager.add_typing(user_message_id)
+
+                if reaction_id:
+                    self._pending_reactions[session_id] = {
+                        "user_message_id": user_message_id,
+                        "reaction_id": reaction_id
+                    }
+                    logger.info(f"已添加敲键盘表情 - reaction_id: {reaction_id}")
+                else:
+                    logger.warning(f"添加敲键盘表情失败，继续处理消息")
+            else:
+                logger.info("user_message_id 为空，跳过表情处理")
+            # ===== 表情处理结束 =====
+
+            # 创建初始卡片
+            initial_card = self.card_builder.create_message_card("思考中...")
+            logger.info(f"发送初始卡片: 思考中...")
+
+            if not user_message_id:
+                logger.info("user_message_id 为空，使用普通发送而非回复")
+                message_id = await self.send_message(
+                    session_id=session_id,
+                    content=initial_card,
+                    message_type=MessageType.CARD,
+                    receive_id_type="chat_id",
+                )
+            else:
+                message_id = await self.reply_message(
+                    parent_message_id=user_message_id,
+                    content=initial_card,
+                    message_type=MessageType.CARD,
+                    reply_in_thread=False,
+                )
+            logger.info(f"✅ 初始卡片已发送，消息 ID: {message_id}")
+
+            # 流式接收响应
+            accumulated_content = ""
+            event_count = 0
+
+            logger.info(f"开始向 Claude 发送消息并接收响应...")
+
+            # 直接使用传入的 client 发送消息
+            await client.query(message_content, claude_session_id)
+
+            # 接收流式响应
+            async for sdk_message in client.receive_messages():
+                event_count += 1
+
+                # 转换 SDK 消息为 StreamEvent
+                from claude_agent_sdk import SystemMessage, AssistantMessage, TextBlock, ToolUseBlock
+                from src.core.message import StreamEvent, StreamEventType
+
+                if isinstance(sdk_message, SystemMessage):
+                    continue  # 忽略系统消息
+                elif isinstance(sdk_message, AssistantMessage):
+                    for block in sdk_message.content:
+                        if isinstance(block, TextBlock):
+                            # 文本内容
+                            accumulated_content += block.text
+
+                            # 更新消息
+                            logger.info(f"准备更新消息 {message_id}...")
+                            update_success = await self.update_message(message_id, accumulated_content)
+                            logger.info(f"消息更新结果: {'成功' if update_success else '失败'}")
+                        elif isinstance(block, ToolUseBlock):
+                            # 工具调用 - 暂时跳过
+                            pass
+
+            logger.info(f"流式响应完成，最终内容长度: {len(accumulated_content)}")
+
+            # 替换为完成表情
+            if reaction_id:
+                await self.reaction_manager.replace_with_done(user_message_id, reaction_id)
+                logger.info(f"已替换为完成表情")
+
+        except Exception as e:
+            logger.error(f"流式处理 Claude 响应失败: {e}", exc_info=True)
 
     async def _process_attachments(
         self,
