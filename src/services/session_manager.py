@@ -69,7 +69,15 @@ class SessionManager:
                     restored_count += 1
 
                 except Exception as e:
-                    logger.error(f"    ❌ 恢复会话 {db_session_record.session_id} 失败: {e}")
+                    # 捕获所有异常，避免单个会话失败导致整个恢复过程失败
+                    logger.error(f"    ❌ 恢复会话 {db_session_record.session_id} 失败: {e}", exc_info=True)
+                    # 标记该会话为非活跃状态
+                    try:
+                        db_session_record.is_active = False
+                        db_session.commit()
+                        logger.info(f"    ⚠️  会话 {db_session_record.session_id} 已标记为非活跃")
+                    except Exception as commit_error:
+                        logger.error(f"    ❌ 更新会话状态失败: {commit_error}")
                     # 恢复失败，将此会话标记为非活跃
                     db_session_record.is_active = False
 
@@ -338,3 +346,70 @@ class SessionManager:
             "summary": target_session.summary,
             "created_at": target_session.created_at.isoformat() if target_session.created_at else None
         }
+
+    async def delete_session(
+        self,
+        platform: str,
+        platform_session_id: str,
+        claude_session_id: str
+    ) -> Dict[str, Any]:
+        """删除指定的 Claude 会话
+
+        Args:
+            platform: 平台名称
+            platform_session_id: 平台会话 ID
+            claude_session_id: Claude 会话 ID (数据库中的 id 字段)
+
+        Returns:
+            Dict[str, Any]: 被删除的会话信息
+
+        Raises:
+            SessionNotFoundError: 会话不存在
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        # 获取 IM 会话
+        im_session = await self.storage.get_im_session_by_platform_id(
+            platform, platform_session_id
+        )
+
+        if not im_session:
+            raise SessionNotFoundError(
+                f"平台会话不存在: {platform}/{platform_session_id}"
+            )
+
+        # 获取目标 Claude 会话
+        target_session = await self.storage.get_claude_session(claude_session_id)
+
+        if not target_session or target_session.im_session_id != im_session.id:
+            raise SessionNotFoundError(
+                f"Claude 会话不存在或不属于此平台会话: {claude_session_id}"
+            )
+
+        # 记录会话信息用于返回
+        session_info = {
+            "id": target_session.id,
+            "session_id": target_session.session_id,
+            "work_directory": target_session.work_directory,
+            "summary": target_session.summary,
+        }
+
+        # 尝试关闭 Claude SDK 会话
+        try:
+            await self.claude_adapter.close_session(target_session.session_id)
+            logger.info(f"Claude SDK 会话已关闭: {target_session.session_id}")
+        except Exception as e:
+            logger.warning(f"关闭 Claude SDK 会话失败（继续删除数据库记录）: {e}")
+
+        # 删除数据库记录
+        success = await self.storage.delete_claude_session(claude_session_id)
+
+        if not success:
+            raise SessionNotFoundError(
+                f"删除会话失败: {claude_session_id}"
+            )
+
+        logger.info(f"会话已删除: {claude_session_id}")
+
+        return session_info

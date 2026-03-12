@@ -16,3 +16,4 @@ sessions/
 logs/
 .pytest_cache/
 .ruff_cache/
+.playwright-mcp/

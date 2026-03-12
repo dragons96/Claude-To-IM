@@ -62,7 +62,8 @@ class FeishuReactionManager:
                 ) \
                 .build()
 
-            response = await self._http_client.im.v1.message_reaction.create(request)
+            # 注意：Lark SDK 的 create 方法是同步的，不需要 await
+            response = self._http_client.im.v1.message_reaction.create(request)
 
             if response.code == 0 and response.data:
                 reaction_id = response.data.reaction_id
@@ -105,7 +106,8 @@ class FeishuReactionManager:
                 .reaction_id(reaction_id) \
                 .build()
 
-            response = await self._http_client.im.v1.message_reaction.delete(request)
+            # 注意：Lark SDK 的 delete 方法是同步的，不需要 await
+            response = self._http_client.im.v1.message_reaction.delete(request)
 
             if response.code == 0:
                 logger.info(

@@ -150,14 +150,26 @@ class FeishuBridge(IMAdapter):
 
             # 创建事件处理器
             # 注册消息接收事件和卡片回调事件
-            event_handler = lark.EventDispatcherHandler.builder(
+            event_handler_builder = lark.EventDispatcherHandler.builder(
                 self.config.get("encrypt_key", ""),
                 self.config.get("verification_token", "")
             ).register_p2_im_message_receive_v1(
                 self._handle_message_receive
             ).register_p2_card_action_trigger(
                 self._handle_card_action_callback
-            ).build()
+            )
+
+            # 尝试注册表情反应创建事件处理器（如果 SDK 支持）
+            try:
+                event_handler_builder = event_handler_builder.register_p2_im_message_reaction_created_v1(
+                    self._handle_reaction_created
+                )
+                logger.info("已注册表情反应创建事件处理器")
+            except AttributeError:
+                # 如果 SDK 版本不支持此方法，忽略
+                logger.debug("当前 SDK 版本不支持 register_p2_im_message_reaction_created_v1")
+
+            event_handler = event_handler_builder.build()
 
             # 创建 WebSocket 客户端（用于接收事件）
             self._ws_client = lark.ws.Client(
@@ -587,6 +599,25 @@ class FeishuBridge(IMAdapter):
 
         except Exception as e:
             logger.error(f"调度消息处理失败: {e}", exc_info=True)
+
+    def _handle_reaction_created(self, event_data) -> None:
+        """处理表情反应创建事件
+
+        这是一个空处理器，用于避免飞书 SDK 报错 "processor not found"。
+        我们不需要处理表情反应创建事件，因为我们只是添加表情，不需要响应。
+
+        Args:
+            event_data: 飞书表情反应事件数据
+        """
+        try:
+            logger.debug(
+                "收到表情反应创建事件（已忽略）",
+                event_type=getattr(event_data, 'type', 'unknown'),
+                message_id=getattr(event_data, 'message_id', 'unknown')
+            )
+            # 不需要做任何处理，只是避免 SDK 报错
+        except Exception as e:
+            logger.debug(f"处理表情反应事件时出错（已忽略）: {e}")
 
     def _handle_card_action_callback(self, event_data: P2CardActionTrigger):
         """处理卡片按钮回调（长连接方式）
@@ -1304,6 +1335,7 @@ class FeishuBridge(IMAdapter):
 
             # ===== 新增：表情处理开始 =====
             # 步骤1: 添加"敲键盘"表情
+            logger.info(f"准备添加敲键盘表情 - session_id: {session_id}, user_message_id: {user_message_id}")
             reaction_id = await self.reaction_manager.add_typing(user_message_id)
 
             # 步骤2: 存储状态
@@ -1313,14 +1345,14 @@ class FeishuBridge(IMAdapter):
                     "reaction_id": reaction_id
                 }
                 logger.info(
-                    f"已添加敲键盘表情",
-                    session_id=session_id,
-                    user_message_id=user_message_id,
-                    reaction_id=reaction_id
+                    f"已添加敲键盘表情 - session_id: {session_id}, "
+                    f"user_message_id: {user_message_id}, reaction_id: {reaction_id}, "
+                    f"pending_reactions_count: {len(self._pending_reactions)}"
                 )
             else:
                 logger.warning(
-                    f"添加敲键盘表情失败，继续处理消息 - session_id: {session_id}, user_message_id: {user_message_id}"
+                    f"添加敲键盘表情失败，继续处理消息 - session_id: {session_id}, "
+                    f"user_message_id: {user_message_id}"
                 )
             # ===== 表情处理结束 =====
 
@@ -1504,10 +1536,21 @@ class FeishuBridge(IMAdapter):
         Args:
             session_id: 会话ID
         """
+        logger.debug(
+            f"尝试完成表情处理 - session_id: {session_id}, "
+            f"pending_reactions_keys: {list(self._pending_reactions.keys())}"
+        )
+
         reaction_info = self._pending_reactions.get(session_id)
 
         if not reaction_info:
-            logger.warning(f"未找到会话 {session_id} 的表情信息")
+            # 如果没有表情信息，可能是因为添加表情失败了，这是正常情况
+            # 不需要记录警告，只在 debug 级别记录
+            logger.debug(
+                f"未找到会话的表情信息（可能添加表情失败或已被清理）"
+                f" - session_id: {session_id}, "
+                f"available_sessions: {list(self._pending_reactions.keys()) if self._pending_reactions else []}"
+            )
             return
 
         try:

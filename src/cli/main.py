@@ -426,25 +426,47 @@ async def _cleanup_components(components: dict, force: bool = False) -> None:
             else:
                 logger.debug(f"停止飞书桥接时出错（强制模式）: {e}")
 
-        # 2. 关闭所有 Claude 会话
+        # 2. 关闭所有 Claude 会话（使用更robust的错误处理）
         logger.info("关闭 Claude 会话...")
         try:
             claude_adapter = components["claude_adapter"]
             sessions = await claude_adapter.list_sessions()
+
             for session in sessions:
+                session_id = session.session_id
                 try:
-                    await claude_adapter.close_session(session.session_id)
+                    # 使用 shield 保护关闭操作，避免被外部取消
+                    # 添加超时保护，避免无限等待
+                    await asyncio.shield(
+                        asyncio.wait_for(
+                            claude_adapter.close_session(session_id),
+                            timeout=3.0
+                        )
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(f"关闭会话 {session_id} 超时")
                 except asyncio.CancelledError:
                     if not force:
                         raise
+                    logger.debug(f"关闭会话 {session_id} 时被取消")
+                except RuntimeError as e:
+                    # 忽略 cancel scope 错误（跨任务关闭）
+                    if "cancel scope" in str(e):
+                        logger.debug(f"关闭会话 {session_id} 时遇到 cancel scope 错误，已忽略")
+                    else:
+                        logger.warning(f"关闭会话 {session_id} 时遇到 RuntimeError: {e}")
                 except Exception as e:
-                    logger.warning(f"关闭会话 {session.session_id} 时出错: {e}")
+                    logger.warning(f"关闭会话 {session_id} 时出错: {e}")
+
         except asyncio.CancelledError:
             if not force:
                 raise
+            logger.debug("列出会话时被取消")
         except Exception as e:
             if not force:
                 logger.error(f"关闭会话时出错: {e}")
+            else:
+                logger.debug(f"关闭会话时出错（强制模式）: {e}")
 
         # 3. 关闭数据库会话
         logger.info("关闭数据库连接...")
@@ -530,9 +552,28 @@ async def main_async(
         # 尝试清理资源（忽略清理过程中的错误）
         try:
             if 'components' in locals():
-                await _cleanup_components(components, force=True)
-        except Exception:
-            pass  # 忽略清理错误
+                # 使用 gather 的 return_exceptions=True 来确保所有清理操作都被尝试
+                cleanup_tasks = []
+                try:
+                    # 先尝试优雅关闭
+                    cleanup_tasks.append(_cleanup_components(components, force=False))
+                except Exception:
+                    pass
+
+                # 如果优雅关闭失败，强制关闭
+                if cleanup_tasks:
+                    results = await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+                    if any(isinstance(r, Exception) for r in results):
+                        logger.debug("优雅关闭失败，尝试强制清理")
+                        await _cleanup_components(components, force=True)
+                else:
+                    await _cleanup_components(components, force=True)
+        except asyncio.CancelledError:
+            # 最后的防护：忽略所有取消错误
+            logger.debug("强制清理也被取消，应用即将退出")
+        except Exception as cleanup_error:
+            logger.debug(f"清理过程中出现异常（将被忽略）: {cleanup_error}")
+
     except Exception as e:
         logger.error(f"应用运行错误: {e}", exc_info=True)
 
@@ -542,9 +583,9 @@ async def main_async(
                 await _cleanup_components(components, force=True)
         except asyncio.CancelledError:
             # 忽略取消错误
-            pass
+            logger.debug("清理过程被取消")
         except Exception as cleanup_error:
-            logger.error(f"清理资源时出错: {cleanup_error}")
+            logger.debug(f"清理资源时出错: {cleanup_error}")
 
         sys.exit(1)
 

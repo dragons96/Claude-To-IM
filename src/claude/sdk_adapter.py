@@ -329,6 +329,47 @@ class ClaudeSDKAdapter(ClaudeAdapter):
                 metadata={"session_id": session_id}
             )
 
+    async def close_all_sessions(self) -> None:
+        """关闭所有会话
+
+        安全地关闭所有活跃会话，忽略关闭过程中的错误。
+        此方法适用于应用关闭时的清理操作。
+
+        注意：
+        - 会尝试关闭所有会话，即使某个会话关闭失败
+        - 会记录所有错误，但不会抛出异常
+        - 适用于 force=True 的清理场景
+        """
+        import logging
+        import asyncio
+        logger = logging.getLogger(__name__)
+
+        session_ids = list(self.sessions.keys())
+
+        if not session_ids:
+            logger.debug("没有需要关闭的会话")
+            return
+
+        logger.info(f"准备关闭 {len(session_ids)} 个会话...")
+
+        for session_id in session_ids:
+            try:
+                await self.close_session(session_id)
+            except asyncio.CancelledError:
+                # 忽略取消错误，继续关闭其他会话
+                logger.debug(f"关闭会话 {session_id} 时被取消")
+            except RuntimeError as e:
+                # 忽略 cancel scope 错误
+                if "cancel scope" in str(e):
+                    logger.debug(f"关闭会话 {session_id} 时遇到 cancel scope 错误")
+                else:
+                    logger.debug(f"关闭会话 {session_id} 时遇到 RuntimeError: {e}")
+            except Exception as e:
+                # 记录其他错误，但继续关闭其他会话
+                logger.debug(f"关闭会话 {session_id} 时出错: {e}")
+
+        logger.info(f"所有会话关闭尝试完成")
+
     async def get_session_info(self, session_id: str) -> Optional[ClaudeSession]:
         """获取会话信息
 
@@ -499,3 +540,47 @@ class ClaudeSDKAdapter(ClaudeAdapter):
 
         except Exception as e:
             logger.warning(f"显示配置信息失败: {e}")
+
+    async def get_mcp_tools_info(self) -> Dict[str, Any]:
+        """获取 MCP 工具的详细信息
+
+        Returns:
+            Dict[str, Any]: MCP 工具信息,包含服务器状态和工具列表
+        """
+        try:
+            # 创建临时客户端
+            temp_client = ClaudeSDKClient(self.options)
+
+            # 连接到 CLI
+            await temp_client.connect()
+
+            # 获取 MCP 状态
+            mcp_status = await temp_client.get_mcp_status()
+            return mcp_status
+
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"获取 MCP 工具信息失败: {e}")
+            return {"error": str(e)}
+
+    async def get_commands_info(self) -> Dict[str, Any]:
+        """获取可用命令的详细信息
+
+        Returns:
+            Dict[str, Any]: 命令信息,包含斜杠命令和系统命令
+        """
+        try:
+            # 创建临时客户端
+            temp_client = ClaudeSDKClient(self.options)
+
+            # 连接到 CLI
+            await temp_client.connect()
+
+            # 获取服务器信息
+            server_info = await temp_client.get_server_info()
+            return server_info
+
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"获取命令信息失败: {e}")
+            return {"error": str(e)}

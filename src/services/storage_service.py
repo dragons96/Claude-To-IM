@@ -199,6 +199,26 @@ class StorageService:
             session.is_active = is_active
             self.db.commit()
 
+    async def delete_claude_session(self, session_id: str) -> bool:
+        """
+        删除 Claude 会话
+
+        Args:
+            session_id: 会话 ID (数据库中的 id 字段)
+
+        Returns:
+            bool: 是否删除成功
+        """
+        session = self.db.query(ClaudeSession).filter_by(id=session_id).first()
+        if session:
+            # 删除关联的消息历史
+            self.db.query(MessageHistory).filter_by(claude_session_id=session_id).delete()
+            # 删除会话
+            self.db.delete(session)
+            self.db.commit()
+            return True
+        return False
+
     # ==================== Message Operations ====================
 
     async def save_message(
