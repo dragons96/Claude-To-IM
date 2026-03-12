@@ -1410,11 +1410,14 @@ class FeishuBridge(IMAdapter):
                 session_options = copy.copy(self.claude_adapter.options)
                 session_options.cwd = session_record.work_directory
 
+                # 设置 resume 参数以恢复会话历史
+                session_options.resume = session_record.session_id
+
                 logger.info(f"🔧 临时会话创建参数:")
                 logger.info(f"  数据库 session_id: {session_record.session_id}")
                 logger.info(f"  work_directory: {session_record.work_directory}")
                 logger.info(f"  session_options.cwd: {session_options.cwd}")
-                logger.info(f"  是否设置 resume: False (临时会话不使用 resume)")
+                logger.info(f"  ✅ 已设置 session_options.resume: {session_options.resume}")
 
                 temp_client = ClaudeSDKClient(session_options)
 

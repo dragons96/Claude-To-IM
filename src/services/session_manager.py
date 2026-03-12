@@ -351,6 +351,54 @@ class SessionManager:
                 f"Claude 会话不存在或不属于此平台会话: {db_session_id}"
             )
 
+        # 检查会话是否已在内存中
+        logger.info(f"检查会话 {target_session.session_id} 是否在内存中...")
+        existing_session = await self.claude_adapter.get_session_info(
+            target_session.session_id
+        )
+
+        if existing_session:
+            # 会话已在内存中，检查是否是同一个会话
+            logger.info(f"✅ 会话 {target_session.session_id} 已在内存中")
+            if existing_session.session_id == target_session.session_id:
+                logger.info(f"✅ 内存中的会话ID与目标会话ID一致，无需恢复")
+            else:
+                logger.warning(f"⚠️  内存中的会话ID ({existing_session.session_id}) 与目标会话ID ({target_session.session_id}) 不一致，需要恢复")
+                # 关闭旧会话
+                try:
+                    await self.claude_adapter.close_session(existing_session.session_id)
+                    logger.info(f"已关闭旧的会话: {existing_session.session_id}")
+                except Exception as e:
+                    logger.error(f"关闭旧会话失败: {e}")
+
+                # 恢复目标会话
+                logger.info(f"开始恢复目标会话: {target_session.session_id}")
+                restored_session = await self.claude_adapter.create_session(
+                    work_directory=target_session.work_directory,
+                    session_id=target_session.session_id,
+                    resume_session_id=target_session.session_id
+                )
+                logger.info(f"✅ 目标会话已恢复: {restored_session.session_id}")
+        else:
+            # 会话不在内存中，需要恢复
+            logger.info(f"会话 {target_session.session_id} 不在内存中，开始恢复...")
+            logger.info(f"  工作目录: {target_session.work_directory}")
+
+            try:
+                # 使用 resume 参数恢复会话
+                restored_session = await self.claude_adapter.create_session(
+                    work_directory=target_session.work_directory,
+                    session_id=target_session.session_id,
+                    resume_session_id=target_session.session_id
+                )
+                logger.info(f"✅ 会话已恢复: {restored_session.session_id}")
+
+            except Exception as e:
+                logger.error(f"❌ 恢复会话 {target_session.session_id} 失败: {e}", exc_info=True)
+                # 恢复失败，将旧会话标记为非活跃并抛出异常
+                await self.storage.set_claude_session_active(target_session.id, False)
+                raise RuntimeError(f"无法恢复会话 {db_session_id}: {str(e)}") from e
+
         # 先将该 IM 会话的所有其他活跃会话标记为非活跃（确保只有一个活跃会话）
         await self.storage.set_all_claude_sessions_inactive(im_session.id)
         logger.info(f"已将 IM 会话 {im_session.id} 的所有其他会话标记为非活跃")
