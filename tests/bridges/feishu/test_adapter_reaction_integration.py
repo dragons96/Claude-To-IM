@@ -343,3 +343,200 @@ class TestFeishuBridgeReactionIntegration:
 
         # 5. 状态被清理（在finally块中执行）
         assert "chat_test_123" not in adapter._pending_reactions
+
+    @pytest.mark.asyncio
+    async def test_reaction_add_failure_does_not_break_flow(self):
+        """测试表情添加失败不影响主流程"""
+        # 创建mock依赖
+        mock_claude_adapter = Mock()
+        mock_session_manager = Mock()
+        mock_resource_manager = Mock()
+        mock_message_handler = Mock()
+        mock_message_handler.bot_user_id = None
+        mock_command_handler = Mock()
+        mock_card_builder = Mock()
+
+        config = {
+            "app_id": "test_app",
+            "app_secret": "test_secret",
+            "encrypt_key": "test_key",
+            "verification_token": "test_token",
+            "bot_user_id": "bot_123"
+        }
+
+        # 创建adapter
+        adapter = FeishuBridge(
+            config=config,
+            claude_adapter=mock_claude_adapter,
+            session_manager=mock_session_manager,
+            resource_manager=mock_resource_manager,
+            message_handler=mock_message_handler,
+            command_handler=mock_command_handler,
+            card_builder=mock_card_builder
+        )
+
+        # Mock WebSocket客户端创建并启动
+        with patch('lark_oapi.ws.Client'):
+            await adapter.start()
+
+        # 准备测试消息
+        from src.core.message import IMMessage, MessageType
+        test_message = IMMessage(
+            session_id="chat_test",
+            message_id="user_msg",
+            content="Hello",
+            message_type=MessageType.TEXT,
+            user_id="user_789",
+            user_name="Test User",
+            is_private_chat=False
+        )
+
+        # Mock表情添加返回None（失败）
+        adapter.reaction_manager.add_typing = AsyncMock(return_value=None)
+        adapter.reaction_manager.replace_with_done = AsyncMock(return_value=True)
+
+        # Mock send_message（用于发送卡片）
+        adapter.send_message = AsyncMock(return_value="card_msg_id")
+
+        # Mock claude_adapter和session_manager
+        mock_claude_session = Mock()
+        mock_claude_session.session_id = "claude_session"
+        adapter.session_manager.get_or_create_session = AsyncMock(return_value=mock_claude_session)
+
+        # 验证标志
+        stream_called = False
+
+        # Mock流式响应 - 使用异步生成器函数
+        from src.core.message import StreamEvent, StreamEventType
+        async def mock_stream(*args, **kwargs):
+            nonlocal stream_called
+            stream_called = True
+            yield StreamEvent(
+                event_type=StreamEventType.TEXT_DELTA,
+                content="Hi",
+                metadata={}
+            )
+            yield StreamEvent(
+                event_type=StreamEventType.END,
+                content="",
+                metadata={}
+            )
+
+        adapter.claude_adapter.send_message = mock_stream
+        adapter.card_builder.create_message_card = Mock(return_value="{}")
+        adapter.card_builder.create_text_card = Mock(return_value="{}")
+        adapter.update_message = AsyncMock(return_value=True)
+
+        # 执行 - 不应抛出异常
+        await adapter.route_to_claude(test_message)
+
+        # 验证
+        # 1. 尝试添加表情
+        adapter.reaction_manager.add_typing.assert_called_once()
+
+        # 2. Claude仍被调用（通过验证标志）
+        assert stream_called, "Claude send_message应该被调用"
+
+        # 3. 卡片消息被发送
+        adapter.send_message.assert_called()
+
+        # 4. 没有尝试替换表情（因为没有reaction_id）
+        adapter.reaction_manager.replace_with_done.assert_not_called()
+
+        # 5. 没有保存状态
+        assert "chat_test" not in adapter._pending_reactions
+
+    @pytest.mark.asyncio
+    async def test_exception_in_streaming_still_finalizes_reaction(self):
+        """测试流式响应异常时仍然完成表情处理"""
+        # 创建mock依赖
+        mock_claude_adapter = Mock()
+        mock_session_manager = Mock()
+        mock_resource_manager = Mock()
+        mock_message_handler = Mock()
+        mock_message_handler.bot_user_id = None
+        mock_command_handler = Mock()
+        mock_card_builder = Mock()
+
+        config = {
+            "app_id": "test_app",
+            "app_secret": "test_secret",
+            "encrypt_key": "test_key",
+            "verification_token": "test_token",
+            "bot_user_id": "bot_123"
+        }
+
+        # 创建adapter
+        adapter = FeishuBridge(
+            config=config,
+            claude_adapter=mock_claude_adapter,
+            session_manager=mock_session_manager,
+            resource_manager=mock_resource_manager,
+            message_handler=mock_message_handler,
+            command_handler=mock_command_handler,
+            card_builder=mock_card_builder
+        )
+
+        # Mock WebSocket客户端创建并启动
+        with patch('lark_oapi.ws.Client'):
+            await adapter.start()
+
+        # 准备测试消息
+        from src.core.message import IMMessage, MessageType
+        test_message = IMMessage(
+            session_id="chat_test",
+            message_id="user_msg",
+            content="Hello",
+            message_type=MessageType.TEXT,
+            user_id="user_789",
+            user_name="Test User",
+            is_private_chat=False
+        )
+
+        # Mock表情管理器
+        adapter.reaction_manager.add_typing = AsyncMock(return_value="reaction_123")
+        adapter.reaction_manager.replace_with_done = AsyncMock(return_value=True)
+
+        # Mock send_message（用于发送卡片）
+        adapter.send_message = AsyncMock(return_value="card_msg_id")
+
+        # Mock claude_adapter和session_manager
+        mock_claude_session = Mock()
+        mock_claude_session.session_id = "claude_session"
+        adapter.session_manager.get_or_create_session = AsyncMock(return_value=mock_claude_session)
+
+        # 验证标志
+        stream_called = False
+
+        # Mock流式响应抛出异常 - 使用异步生成器函数
+        from src.core.message import StreamEvent, StreamEventType
+        async def mock_stream_error(*args, **kwargs):
+            nonlocal stream_called
+            stream_called = True
+            yield StreamEvent(
+                event_type=StreamEventType.TEXT_DELTA,
+                content="Hi",
+                metadata={}
+            )
+            raise Exception("Claude API error")
+
+        adapter.claude_adapter.send_message = mock_stream_error
+        adapter.card_builder.create_message_card = Mock(return_value="{}")
+        adapter.card_builder.create_text_card = Mock(return_value="{}")
+        adapter.update_message = AsyncMock(return_value=True)
+
+        # 执行 - 应该捕获异常并完成表情处理
+        try:
+            await adapter.route_to_claude(test_message)
+        except Exception:
+            pass  # 预期会抛出异常
+
+        # 验证
+        # 1. 流式调用被执行
+        assert stream_called, "Claude send_message应该被调用"
+
+        # 2. 表情仍被完成
+        adapter.reaction_manager.replace_with_done.assert_called_once()
+
+        # 3. 状态被清理
+        assert "chat_test" not in adapter._pending_reactions

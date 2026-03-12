@@ -1320,9 +1320,7 @@ class FeishuBridge(IMAdapter):
                 )
             else:
                 logger.warning(
-                    f"添加敲键盘表情失败，继续处理消息",
-                    session_id=session_id,
-                    user_message_id=user_message_id
+                    f"添加敲键盘表情失败，继续处理消息 - session_id: {session_id}, user_message_id: {user_message_id}"
                 )
             # ===== 表情处理结束 =====
 
